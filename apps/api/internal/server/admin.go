@@ -1,0 +1,161 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"strings"
+	"time"
+)
+
+// AdminDocStat holds per-document growth stats for the admin endpoint.
+type AdminDocStat struct {
+	DocumentID      string    `json:"document_id"`
+	Title           string    `json:"title"`
+	OwnerID         string    `json:"owner_id"`
+	UpdateCount     int64     `json:"update_count"`
+	UpdateBytes     int64     `json:"update_bytes"`
+	SnapshotCount   int64     `json:"snapshot_count"`
+	LatestSnapBytes int64     `json:"latest_snapshot_bytes"`
+	LastActivityAt  time.Time `json:"last_activity_at"`
+}
+
+type AdminStats struct {
+	GeneratedAt       time.Time      `json:"generated_at"`
+	TotalDocuments    int            `json:"total_documents"`
+	TotalUpdateRows   int64          `json:"total_update_rows"`
+	TotalUpdateBytes  int64          `json:"total_update_bytes"`
+	TotalSnapshotRows int64          `json:"total_snapshot_rows"`
+	Documents         []AdminDocStat `json:"documents"`
+}
+
+// adminStats returns document growth metrics. Protected by a static
+// ADMIN_SECRET bearer token (set via config). In production this endpoint
+// should additionally be firewalled to the internal network.
+func (s *Server) adminStats(w http.ResponseWriter, r *http.Request) {
+	secret := s.cfg.AdminSecret
+	if secret != "" {
+		auth := r.Header.Get("Authorization")
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if token != secret {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	rows, err := s.store.Pool.Query(ctx, `
+SELECT
+  d.id,
+  d.title,
+  d.owner_id,
+  COUNT(DISTINCT du.seq)                     AS update_count,
+  COALESCE(SUM(octet_length(du.update_blob)), 0) AS update_bytes,
+  COUNT(DISTINCT ds.version)                 AS snapshot_count,
+  COALESCE(MAX(ds.size_bytes), 0)            AS latest_snap_bytes,
+  GREATEST(MAX(du.created_at), MAX(ds.created_at), d.updated_at) AS last_activity_at
+FROM documents d
+LEFT JOIN document_updates   du ON du.document_id = d.id
+LEFT JOIN document_snapshots ds ON ds.document_id = d.id
+WHERE d.deleted_at IS NULL
+GROUP BY d.id
+ORDER BY last_activity_at DESC NULLS LAST
+LIMIT 500
+`)
+	if err != nil {
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	stats := AdminStats{
+		GeneratedAt: time.Now().UTC(),
+		Documents:   make([]AdminDocStat, 0, 64),
+	}
+
+	for rows.Next() {
+		var doc AdminDocStat
+		if err := rows.Scan(
+			&doc.DocumentID,
+			&doc.Title,
+			&doc.OwnerID,
+			&doc.UpdateCount,
+			&doc.UpdateBytes,
+			&doc.SnapshotCount,
+			&doc.LatestSnapBytes,
+			&doc.LastActivityAt,
+		); err != nil {
+			http.Error(w, "scan failed", http.StatusInternalServerError)
+			return
+		}
+		stats.TotalDocuments++
+		stats.TotalUpdateRows += doc.UpdateCount
+		stats.TotalUpdateBytes += doc.UpdateBytes
+		stats.TotalSnapshotRows += doc.SnapshotCount
+		stats.Documents = append(stats.Documents, doc)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, "rows error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(stats)
+}
+
+// adminRetentionRuns returns the last N retention run records so operators
+// can confirm the GC job is executing on schedule.
+func (s *Server) adminRetentionRuns(w http.ResponseWriter, r *http.Request) {
+	secret := s.cfg.AdminSecret
+	if secret != "" {
+		auth := r.Header.Get("Authorization")
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if token != secret {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	rows, err := s.store.Pool.Query(ctx, `
+SELECT id, started_at, finished_at, snapshots_deleted, updates_deleted, docs_processed
+FROM retention_runs
+ORDER BY started_at DESC
+LIMIT 50
+`)
+	if err != nil {
+		http.Error(w, "query failed", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type run struct {
+		ID               int64      `json:"id"`
+		StartedAt        time.Time  `json:"started_at"`
+		FinishedAt       *time.Time `json:"finished_at,omitempty"`
+		SnapshotsDeleted int        `json:"snapshots_deleted"`
+		UpdatesDeleted   int64      `json:"updates_deleted"`
+		DocsProcessed    int        `json:"docs_processed"`
+	}
+	out := make([]run, 0, 50)
+	for rows.Next() {
+		var rr run
+		if err := rows.Scan(&rr.ID, &rr.StartedAt, &rr.FinishedAt,
+			&rr.SnapshotsDeleted, &rr.UpdatesDeleted, &rr.DocsProcessed); err != nil {
+			http.Error(w, "scan failed", http.StatusInternalServerError)
+			return
+		}
+		out = append(out, rr)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, "rows error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
+}

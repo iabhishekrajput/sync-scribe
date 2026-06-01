@@ -1,0 +1,279 @@
+@import "tailwindcss";
+
+/* Tailwind 4 dark-mode variant: class-strategy via `dark` class on <html>. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", "Fira Code", "SF Mono", monospace;
+}
+
+html, body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: white;
+  color: #0a0a0a;
+}
+
+html.dark body {
+  background: #0a0a0a;
+  color: #ededed;
+}
+
+/* Monaco surface tweaks so it sits flush in the editor pane. Font family and
+   size live in Monaco's options (`fontFamily`/`fontSize`) so its layout math
+   matches what's rendered — overriding via CSS desyncs cursor positioning. */
+.monaco-editor,
+.monaco-editor .monaco-scrollable-element,
+.monaco-editor .overflow-guard {
+  height: 100%;
+}
+.monaco-comment-range-hl {
+  background: rgba(251, 191, 36, 0.22);
+  border-radius: 2px;
+}
+html.dark .monaco-comment-range-hl {
+  background: rgba(251, 191, 36, 0.14);
+}
+
+/* Minimal markdown preview styles. Phase 2 may swap for typography plugin. */
+.md-preview { line-height: 1.65; width: 100%; max-width: none; }
+.md-preview h1 { font-size: 1.75rem; font-weight: 700; margin: 1.25rem 0 0.75rem; }
+.md-preview h2 { font-size: 1.4rem; font-weight: 700; margin: 1.15rem 0 0.6rem; }
+.md-preview h3 { font-size: 1.15rem; font-weight: 600; margin: 1rem 0 0.5rem; }
+.md-preview h4 { font-weight: 600; margin: 0.9rem 0 0.4rem; }
+.md-preview p { margin: 0.6rem 0; }
+.md-preview ul, .md-preview ol { padding-left: 1.4rem; margin: 0.6rem 0; }
+.md-preview ul { list-style: disc; }
+.md-preview ol { list-style: decimal; }
+.md-preview li { margin: 0.2rem 0; }
+.md-preview a { color: #2563eb; text-decoration: underline; }
+html.dark .md-preview a { color: #60a5fa; }
+.md-preview blockquote {
+  margin: 0.8rem 0; padding: 0.2rem 0 0.2rem 0.9rem;
+  border-left: 3px solid currentColor; opacity: 0.85;
+}
+.md-preview code {
+  font-family: var(--font-mono); font-size: 0.875em;
+  padding: 0.1rem 0.35rem; border-radius: 4px;
+  background: rgba(0,0,0,0.06);
+}
+html.dark .md-preview code { background: rgba(255,255,255,0.08); }
+.md-preview pre {
+  font-family: var(--font-mono); font-size: 0.85rem;
+  margin: 0.8rem 0; padding: 0.85rem 1rem; border-radius: 6px;
+  background: #f6f8fa; overflow-x: auto;
+}
+html.dark .md-preview pre { background: #1c1f24; }
+.md-preview pre code { background: transparent; padding: 0; }
+.md-preview hr { margin: 1.2rem 0; border-top: 1px solid currentColor; opacity: 0.2; }
+.md-preview table { border-collapse: collapse; margin: 0.8rem 0; }
+.md-preview table, .md-preview pre, .md-preview .mermaid-diagram { max-width: 100%; }
+.md-preview th, .md-preview td {
+  border: 1px solid currentColor; padding: 0.3rem 0.6rem; opacity: 0.95;
+}
+.md-preview th { font-weight: 600; }
+.md-preview .preview-comment-hl {
+  border-radius: 3px;
+  background: rgba(251, 191, 36, 0.22);
+}
+html.dark .md-preview .preview-comment-hl {
+  background: rgba(251, 191, 36, 0.14);
+}
+.mermaid-diagram {
+  margin: 0.8rem 0;
+  overflow-x: auto;
+}
+.mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+html.dark .mermaid-diagram svg .edgePath .path,
+html.dark .mermaid-diagram svg .flowchart-link,
+html.dark .mermaid-diagram svg .messageLine0,
+html.dark .mermaid-diagram svg .messageLine1 {
+  stroke: #d4d4d8 !important;
+}
+html.dark .mermaid-diagram svg marker path,
+html.dark .mermaid-diagram svg .arrowMarkerPath {
+  fill: #d4d4d8 !important;
+  stroke: #d4d4d8 !important;
+}
+html.dark .mermaid-diagram svg .edgeLabel,
+html.dark .mermaid-diagram svg .labelBkg {
+  background-color: #171717 !important;
+  fill: #171717 !important;
+}
+.mermaid-loading {
+  margin: 0.8rem 0;
+  font-size: 0.875rem;
+  opacity: 0.65;
+}
+.mermaid-fallback {
+  border: 1px solid rgba(220, 38, 38, 0.25);
+}
+
+.print-metadata {
+  display: none;
+}
+
+/* Print stylesheet — used by Phase 2 PDF export. Hide chrome, serif body. */
+@media print {
+  @page {
+    margin: 0.8in 0.75in 0.9in;
+  }
+
+  html,
+  body {
+    height: auto;
+    background: white !important;
+    color: black !important;
+    overflow: visible !important;
+  }
+
+  body {
+    font-family: Georgia, "Times New Roman", serif;
+  }
+
+  .no-print,
+  .monaco-editor,
+  [data-panel-resize-handle-id],
+  .mermaid-loading {
+    display: none !important;
+  }
+
+  .editor-shell,
+  .editor-panels,
+  .preview-pane {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    overflow: visible !important;
+  }
+
+  .editor-panels,
+  .preview-pane {
+    flex: none !important;
+  }
+
+  .md-preview {
+    height: auto !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    max-width: none;
+  }
+
+  .print-metadata {
+    display: block;
+    margin-bottom: 1.4rem;
+    padding-bottom: 0.8rem;
+    border-bottom: 1px solid #d4d4d4;
+  }
+
+  .print-metadata h1 {
+    margin: 0 0 0.25rem;
+    font-family: var(--font-sans);
+    font-size: 1.5rem;
+  }
+
+  .print-metadata p {
+    margin: 0;
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    color: #525252;
+  }
+
+  .md-preview h1,
+  .md-preview h2,
+  .md-preview h3,
+  .md-preview h4,
+  .md-preview blockquote,
+  .md-preview pre,
+  .md-preview table,
+  .md-preview .mermaid-diagram {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .md-preview pre,
+  .md-preview code {
+    background: #f6f8fa !important;
+    color: black !important;
+  }
+
+  .md-preview pre {
+    white-space: pre-wrap;
+    overflow: visible !important;
+  }
+
+  .md-preview a {
+    color: black !important;
+  }
+
+  /* Mermaid hardening: force light-on-white SVG colors for print regardless
+     of the current theme, and force the SVG to occupy the full printable
+     column. Mermaid emits SVG without a `width` attribute and with an inline
+     `style="max-width: NNNpx"` keyed to the diagram's natural pixel size; in
+     print that leaves the SVG at the 300px CSS default, producing tiny
+     overlapping labels. Overriding with width:100% + max-width:none lets the
+     viewBox scale the diagram to the available column width. */
+  .md-preview .mermaid-diagram {
+    overflow: visible !important;
+    margin: 0.5rem 0 1rem;
+    text-align: center;
+    width: 100% !important;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+  .md-preview .mermaid-diagram svg {
+    width: 100% !important;
+    height: auto !important;
+    max-width: none !important;
+    max-height: 9in !important;
+    background: white !important;
+  }
+  .md-preview .mermaid-diagram svg text,
+  .md-preview .mermaid-diagram svg .nodeLabel,
+  .md-preview .mermaid-diagram svg .edgeLabel,
+  .md-preview .mermaid-diagram svg .actor,
+  .md-preview .mermaid-diagram svg .messageText {
+    fill: black !important;
+    color: black !important;
+  }
+  /* Edge lines: stroke only — they're open paths. Setting `fill` on these
+     paints the area enclosed by the curve, producing huge black wedges. */
+  .md-preview .mermaid-diagram svg .edgePath .path,
+  .md-preview .mermaid-diagram svg .flowchart-link,
+  .md-preview .mermaid-diagram svg .messageLine0,
+  .md-preview .mermaid-diagram svg .messageLine1 {
+    stroke: black !important;
+    fill: none !important;
+  }
+  /* Arrowhead markers are filled triangles — these want fill + stroke. */
+  .md-preview .mermaid-diagram svg marker path,
+  .md-preview .mermaid-diagram svg .arrowMarkerPath {
+    stroke: black !important;
+    fill: black !important;
+  }
+  .md-preview .mermaid-diagram svg .labelBkg {
+    background: white !important;
+    fill: white !important;
+  }
+  .md-preview .mermaid-fallback {
+    border-color: #d4d4d4 !important;
+  }
+
+  /* Uploaded images: keep within the printable column, never overflow a page. */
+  .md-preview img {
+    max-width: 100% !important;
+    max-height: 8.5in !important;
+    height: auto !important;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}

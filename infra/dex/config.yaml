@@ -1,0 +1,33 @@
+# Dex IdP config for local development.
+# Production deployments point apps/api at your real OIDC authorization server
+# via OIDC_ISSUER_URL.
+
+issuer: http://localhost:5556
+
+storage:
+  type: sqlite3
+  config:
+    file: /tmp/dex.db
+
+web:
+  http: 0.0.0.0:5556
+
+oauth2:
+  skipApprovalScreen: true
+  alwaysShowLoginScreen: false
+
+staticClients:
+  - id: syncscribe-web
+    name: SyncScribe Web
+    public: true                     # SPA with PKCE
+    redirectURIs:
+      - http://localhost:8080/auth/callback
+
+enablePasswordDB: true
+
+staticPasswords:
+  - email: dev@syncscribe.local
+    # bcrypt of "password"
+    hash: $2a$10$2b2cu2a7Yy.UwAwIzz4q1uLI1Z8DZxIJoeNHy2EuO7r5fY8oU3uXa
+    username: dev
+    userID: dev-user-uuid

@@ -1,0 +1,88 @@
+{
+  "title": "SyncScribe — Sync",
+  "uid": "syncscribe-sync",
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "",
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "text": "Prometheus", "value": "Prometheus" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Active WS connections",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "sum(syncscribe_sync_active_connections)", "legendFormat": "connections" },
+        { "expr": "sum(syncscribe_sync_active_sessions)", "legendFormat": "active docs" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Update throughput (per second)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "sum(rate(syncscribe_sync_updates_received_total[1m]))", "legendFormat": "received/s" },
+        { "expr": "sum(rate(syncscribe_sync_updates_persisted_total[1m]))", "legendFormat": "persisted/s" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "WS errors by reason",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "sum by (reason) (rate(syncscribe_sync_ws_errors_total[5m]))", "legendFormat": "{{reason}}" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Resync closes & IP-cap rejects",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "sum(rate(syncscribe_sync_resync_closes_total[5m]))", "legendFormat": "resync closes/s" },
+        { "expr": "sum(rate(syncscribe_sync_ip_cap_rejects_total[5m]))", "legendFormat": "ip-cap rejects/s" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Broadcast bandwidth",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "Bps" } },
+      "targets": [
+        { "expr": "sum(rate(syncscribe_sync_broadcast_bytes_total[1m]))", "legendFormat": "bytes/s" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Replay bytes per connect (p50/p95/p99)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "bytes" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le) (rate(syncscribe_sync_replay_bytes_bucket[5m])))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum by (le) (rate(syncscribe_sync_replay_bytes_bucket[5m])))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(syncscribe_sync_replay_bytes_bucket[5m])))", "legendFormat": "p99" }
+      ]
+    }
+  ]
+}

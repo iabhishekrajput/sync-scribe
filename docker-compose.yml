@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: syncscribe
+      POSTGRES_PASSWORD: syncscribe
+      POSTGRES_DB: syncscribe
+    ports:
+      - "5433:5432"   # host 5433 → container 5432 (avoid collision with auth_postgres on 5432)
+    volumes:
+      # Postgres 18 moved the data dir convention up a level so pg_upgrade
+      # --link can cross major versions without mount-boundary issues.
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U syncscribe"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  valkey:
+    image: valkey/valkey:8-alpine
+    ports:
+      - "6380:6379"   # host 6380 → container 6379 (avoid collision with auth_redis on 6379)
+    volumes:
+      - valkey_data:/data
+    command: ["valkey-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "1026:1025"   # SMTP — host 1026 → container 1025 (auth_mailpit owns 1025)
+      - "8026:8025"   # Web UI — host 8026 → container 8025
+
+  # Dex is OFF by default — point OIDC_ISSUER_URL at your real authorization
+  # server. Bring it up with `docker compose --profile dex up dex` if you ever
+  # need an offline IdP.
+  dex:
+    profiles: ["dex"]
+    image: dexidp/dex:v2.41.1
+    ports:
+      - "5556:5556"
+    volumes:
+      - ./infra/dex/config.yaml:/etc/dex/config.yaml:ro
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+
+volumes:
+  postgres_data:
+  valkey_data:

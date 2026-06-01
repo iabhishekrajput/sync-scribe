@@ -1,0 +1,38 @@
+node_modules/
+.next/
+.turbo/
+dist/
+build/
+out/
+
+# Go
+apps/api/bin/
+.gocache/
+*.test
+*.out
+
+# Env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# Logs
+*.log
+pnpm-debug.log*
+
+# Coverage
+coverage/
+*.lcov
+apps/web/tsconfig.tsbuildinfo
+.gstack/
