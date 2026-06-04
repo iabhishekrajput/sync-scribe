@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, type ShareLink } from "../lib/api";
+import { notifyError } from "../lib/errors";
 
 type Role = "viewer" | "editor";
 type ExpirationOption = "never" | "day" | "week" | "month";
@@ -28,7 +29,6 @@ export function ShareLinksPanel({ docId, isOwner }: { docId: string; isOwner: bo
   const [creating, setCreating] = useState(false);
   const [role, setRole] = useState<Role>("viewer");
   const [expiration, setExpiration] = useState<ExpirationOption>("week");
-  const [error, setError] = useState("");
   const [copied, setCopied] = useState<string | null>(null);
 
   useEffect(() => {
@@ -41,8 +41,8 @@ export function ShareLinksPanel({ docId, isOwner }: { docId: string; isOwner: bo
       try {
         const ls = await api.listShareLinks(docId);
         if (alive) setLinks(ls);
-      } catch {
-        if (alive) setError("Could not load share links.");
+      } catch (err) {
+        if (alive) notifyError(err, "list-share-links");
       } finally {
         if (alive) setLoading(false);
       }
@@ -56,13 +56,12 @@ export function ShareLinksPanel({ docId, isOwner }: { docId: string; isOwner: bo
 
   async function onCreate() {
     setCreating(true);
-    setError("");
     try {
       const expiresInMs = expirationOptions.find((option) => option.value === expiration)?.ms;
       const link = await api.createShareLink(docId, role, expiresInMs);
       setLinks((prev) => [link, ...prev]);
-    } catch {
-      setError("Could not create link.");
+    } catch (err) {
+      notifyError(err, "create-share-link");
     } finally {
       setCreating(false);
     }
@@ -75,8 +74,8 @@ export function ShareLinksPanel({ docId, isOwner }: { docId: string; isOwner: bo
     try {
       await api.revokeShareLink(docId, token);
       setLinks((prev) => prev.filter((l) => l.token !== token));
-    } catch {
-      setError("Could not revoke link.");
+    } catch (err) {
+      notifyError(err, "revoke-share-link");
     }
   }
 
@@ -184,7 +183,6 @@ export function ShareLinksPanel({ docId, isOwner }: { docId: string; isOwner: bo
         </ul>
       )}
 
-      {error && <p className="mt-2 text-xs text-red-600 dark:text-red-400">{error}</p>}
     </div>
   );
 }

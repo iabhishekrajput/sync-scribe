@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/abhishek/sync-scribe/api/internal/httpx"
 )
 
 const (
@@ -51,12 +53,12 @@ type sessionState struct {
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	state, err := NewState()
 	if err != nil {
-		http.Error(w, "state gen", http.StatusInternalServerError)
+		httpx.WriteError(w, r, httpx.Internal("Could not start the sign-in flow.", err))
 		return
 	}
 	verifier, err := NewVerifier()
 	if err != nil {
-		http.Error(w, "verifier gen", http.StatusInternalServerError)
+		httpx.WriteError(w, r, httpx.Internal("Could not start the sign-in flow.", err))
 		return
 	}
 
@@ -65,7 +67,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	flow := flowState{State: state, Verifier: verifier, ReturnTo: returnTo}
 	encoded, err := Encode(h.CookieSecret, flow, time.Now().Add(flowCookieTTL))
 	if err != nil {
-		http.Error(w, "cookie encode", http.StatusInternalServerError)
+		httpx.WriteError(w, r, httpx.Internal("Could not start the sign-in flow.", err))
 		return
 	}
 	SetCookie(w, flowCookieName, encoded, flowCookieTTL, h.CookieSecure)
@@ -89,23 +91,23 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(flowCookieName)
 	if err != nil {
-		http.Error(w, "missing flow cookie", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Sign-in cookie missing. Try signing in again.", err))
 		return
 	}
 	var flow flowState
 	if err := Decode(h.CookieSecret, cookie.Value, &flow); err != nil {
-		http.Error(w, "invalid flow cookie", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Sign-in cookie is invalid or expired. Try again.", err))
 		return
 	}
 	ClearCookie(w, flowCookieName, h.CookieSecure)
 
 	if state := r.URL.Query().Get("state"); state != flow.State {
-		http.Error(w, "state mismatch", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Sign-in state mismatch. Try again.", nil))
 		return
 	}
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		http.Error(w, "missing code", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Sign-in callback is missing the authorization code.", nil))
 		return
 	}
 
@@ -113,7 +115,7 @@ func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 		oauth2.SetAuthURLParam("code_verifier", flow.Verifier),
 	)
 	if err != nil {
-		http.Error(w, "token exchange failed: "+err.Error(), http.StatusBadGateway)
+		httpx.WriteError(w, r, httpx.BadGateway("The identity provider rejected the token exchange.", err))
 		return
 	}
 
@@ -122,13 +124,13 @@ func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 	rawID, _ := tok.Extra("id_token").(string)
 	if rawID != "" {
 		if _, err := h.P.IDVerifier.Verify(r.Context(), rawID); err != nil {
-			http.Error(w, "id_token verify: "+err.Error(), http.StatusBadGateway)
+			httpx.WriteError(w, r, httpx.BadGateway("The identity provider returned an invalid id_token.", err))
 			return
 		}
 	}
 
 	if tok.AccessToken == "" {
-		http.Error(w, "no access token returned", http.StatusBadGateway)
+		httpx.WriteError(w, r, httpx.BadGateway("The identity provider did not return an access token.", nil))
 		return
 	}
 	session := sessionState{
@@ -137,7 +139,7 @@ func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	enc, err := Encode(h.CookieSecret, session, time.Now().Add(sessionCookieTTL))
 	if err != nil {
-		http.Error(w, "session encode", http.StatusInternalServerError)
+		httpx.WriteError(w, r, httpx.Internal("Could not save the session cookie.", err))
 		return
 	}
 	SetCookie(w, sessionCookieName, enc, sessionCookieTTL, h.CookieSecure)
@@ -182,7 +184,7 @@ type refreshResponse struct {
 func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
-		WriteUnauthorized(w, "no session")
+		httpx.WriteError(w, r, httpx.Unauthenticated("Sign in to continue.", err))
 		return
 	}
 	var ss sessionState
@@ -190,14 +192,14 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrCookieExpired) {
 			ClearCookie(w, sessionCookieName, h.CookieSecure)
 		}
-		WriteUnauthorized(w, "invalid session")
+		httpx.WriteError(w, r, httpx.Unauthenticated("Your session is invalid. Sign in again to continue.", err))
 		return
 	}
 
 	now := time.Now().Unix()
 	if ss.ExpiresAt <= now {
 		ClearCookie(w, sessionCookieName, h.CookieSecure)
-		WriteUnauthorized(w, "access token expired — please log in again")
+		httpx.WriteError(w, r, httpx.Unauthenticated("Your session has expired. Sign in again to continue.", nil))
 		return
 	}
 
@@ -222,7 +224,7 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	p := FromContext(r.Context())
 	if p == nil {
-		WriteUnauthorized(w, "no principal")
+		httpx.WriteError(w, r, httpx.Unauthenticated("Sign in to continue.", nil))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

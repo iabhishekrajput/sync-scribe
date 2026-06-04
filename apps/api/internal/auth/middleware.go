@@ -3,26 +3,44 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	"github.com/abhishek/sync-scribe/api/internal/httpx"
 )
 
 // Middleware validates a Bearer access token on every protected request,
 // attaches a Principal to the context, and rejects unauthenticated requests
-// with 401. Designed to be cheap on the hot path — token verification reuses
-// the underlying go-oidc KeySet cache.
+// with the typed JSON envelope. Designed to be cheap on the hot path —
+// token verification reuses the underlying go-oidc KeySet cache.
 func (p *Provider) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		principal, err := p.PrincipalFromRequest(r)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusUnauthorized)
+			httpx.WriteError(w, r, unauthError(err))
 			return
 		}
 		ctx := WithPrincipal(r.Context(), principal)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// unauthError maps the four auth sentinels to user-facing 401 envelopes.
+// Wire code stays "unauthenticated" for all of them so the frontend can
+// branch on the message or simply prompt re-login.
+func unauthError(err error) *httpx.Error {
+	switch {
+	case errors.Is(err, ErrTokenExpired):
+		return httpx.Unauthenticated("Your session has expired. Sign in again to continue.", err)
+	case errors.Is(err, ErrTokenMissing):
+		return httpx.Unauthenticated("Sign in to continue.", err)
+	default:
+		return httpx.Unauthenticated("Sign in to continue.", err)
+	}
 }
 
 // PrincipalFromRequest extracts and verifies the Bearer token. Exported so
@@ -31,7 +49,7 @@ func (p *Provider) Middleware(next http.Handler) http.Handler {
 func (p *Provider) PrincipalFromRequest(r *http.Request) (*Principal, error) {
 	token := bearerToken(r)
 	if token == "" {
-		return nil, ErrUnauthenticated
+		return nil, ErrTokenMissing
 	}
 	return p.PrincipalFromToken(r.Context(), token)
 }
@@ -39,7 +57,11 @@ func (p *Provider) PrincipalFromRequest(r *http.Request) (*Principal, error) {
 func (p *Provider) PrincipalFromToken(ctx context.Context, token string) (*Principal, error) {
 	verified, err := p.AccessVerifier.Verify(ctx, token)
 	if err != nil {
-		return nil, ErrUnauthenticated
+		var expired *oidc.TokenExpiredError
+		if errors.As(err, &expired) {
+			return nil, ErrTokenExpired
+		}
+		return nil, ErrTokenInvalid
 	}
 
 	var claims struct {
@@ -104,8 +126,11 @@ func bearerToken(r *http.Request) string {
 	return ""
 }
 
-// WriteUnauthorized is a small helper handlers can use to be consistent with
-// the middleware's 401 shape.
+// WriteUnauthorized preserves a tiny JSON shape used by a handful of
+// pre-httpx callers (auth.Refresh, auth.Me). New code should call
+// httpx.WriteError(w, r, httpx.Unauthenticated(...)) directly instead.
+//
+// Deprecated: prefer httpx.WriteError.
 func WriteUnauthorized(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)

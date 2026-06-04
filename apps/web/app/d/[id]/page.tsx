@@ -22,6 +22,8 @@ import {
   type SnapshotSummary,
 } from "../../lib/api";
 import { fetchMe, getAccessToken, loginURL } from "../../lib/auth";
+import { ApiError, notifyError } from "../../lib/errors";
+import { toast } from "sonner";
 import { TopBar } from "../../components/TopBar";
 import { SyncProvider, type ConnectionState, type SaveState } from "../../lib/yjs";
 import { ShareLinksPanel } from "../../components/ShareLinksPanel";
@@ -267,7 +269,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const [titleDraft, setTitleDraft] = useState("");
   const [ownerID, setOwnerID] = useState("");
   const [docs, setDocs] = useState<Document[]>([]);
-  const [docsLoadError, setDocsLoadError] = useState("");
+  const [docsLoadFailed, setDocsLoadFailed] = useState(false);
   const [docsSidebarCollapsed, setDocsSidebarCollapsed] = useState(true);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -285,7 +287,6 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const [accessList, setAccessList] = useState<DocumentAccess[]>([]);
   const [pendingInvites, setPendingInvites] = useState<Invite[]>([]);
   const [accessLoading, setAccessLoading] = useState(false);
-  const [accessError, setAccessError] = useState("");
   const [accessBusyUserID, setAccessBusyUserID] = useState("");
   const [presencePeers, setPresencePeers] = useState<PresencePeer[]>([]);
   const [presenceDockOpen, setPresenceDockOpen] = useState(true);
@@ -295,7 +296,6 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const [commentsPanelOpen, setCommentsPanelOpen] = useState(false);
   const [comments, setComments] = useState<DocumentComment[]>([]);
   const [commentBody, setCommentBody] = useState("");
-  const [commentsError, setCommentsError] = useState("");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; line: number; anchor: CommentAnchorDraft } | null>(null);
   const [commentPopup, setCommentPopup] = useState<{ x: number; y: number; kind: "comment" | "suggestion"; anchor: CommentAnchorDraft } | null>(null);
   const [commentSubmitting, setCommentSubmitting] = useState(false);
@@ -303,7 +303,6 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const [pendingCommentDelete, setPendingCommentDelete] = useState<CommentDeleteTarget | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyError, setHistoryError] = useState("");
   const [snapshots, setSnapshots] = useState<SnapshotSummary[]>([]);
   const [selectedSnapshot, setSelectedSnapshot] = useState(0);
   const [snapshotBody, setSnapshotBody] = useState<SnapshotBody | null>(null);
@@ -368,8 +367,11 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
         try {
           const list = await api.listDocuments();
           if (alive) setDocs(list);
-        } catch {
-          if (alive) setDocsLoadError("Could not load documents.");
+        } catch (err) {
+          if (alive) {
+            setDocsLoadFailed(true);
+            notifyError(err, "load-documents-sidebar");
+          }
         }
         const color = colorForUser(m.id);
         const displayName = m.display_name || m.email;
@@ -386,6 +388,10 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
           awareness,
           onState: (s) => setConnState(s),
           onSaveState: setServerSaveState,
+          onDisconnectReason: (reason, level) => {
+            if (level === "error") notifyError(new ApiError(0, reason), "ws-close");
+            else toast.info(reason);
+          },
         });
 
         // Pre-fetch comments so the topbar badge is populated on load.
@@ -393,10 +399,11 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
           const comms = await api.listComments(id, true);
           if (alive) setComments(comms);
         } catch { /* badge gracefully stays at 0 */ }
-      } catch {
+      } catch (err) {
         if (alive) {
           setNotFound(true);
           setLoadError("The document could not be loaded, or you no longer have access.");
+          notifyError(err, "load-document");
         }
       } finally {
         if (alive) setLoading(false);
@@ -542,7 +549,8 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
       const d = await api.renameDocument(id, next);
       setTitle(limitDocumentTitle(d.title));
       setTitleDraft(limitDocumentTitle(d.title));
-    } catch {
+    } catch (err) {
+      notifyError(err, "rename-document");
       setTitleDraft(title);
     }
   }
@@ -556,7 +564,8 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
       setInviteEmail("");
       setInviteState("sent");
       await refreshAccessList();
-    } catch {
+    } catch (err) {
+      notifyError(err, "send-invite");
       setInviteState("error");
     }
   }
@@ -564,46 +573,42 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   async function refreshAccessList() {
     if (!isOwner) return;
     setAccessLoading(true);
-    setAccessError("");
     try {
       const access = await api.listAccess(id);
       setAccessList(access);
       setPendingInvites(await api.listInvites(id));
-    } catch {
-      setAccessError("Could not load document access.");
+    } catch (err) {
+      notifyError(err, "list-access");
     } finally {
       setAccessLoading(false);
     }
   }
 
   async function revokeInvite(token: string) {
-    setAccessError("");
     try {
       await api.revokeInvite(id, token);
       setPendingInvites((prev) => prev.filter((invite) => invite.token !== token));
-    } catch {
-      setAccessError("Could not cancel invite.");
+    } catch (err) {
+      notifyError(err, "revoke-invite");
     }
   }
 
   async function resendInvite(token: string) {
-    setAccessError("");
     try {
       const invite = await api.resendInvite(id, token);
       setPendingInvites((prev) => [invite, ...prev.filter((item) => item.token !== token)]);
-    } catch {
-      setAccessError("Could not resend invite.");
+    } catch (err) {
+      notifyError(err, "resend-invite");
     }
   }
 
   async function updateAccessRole(access: DocumentAccess, role: AccessRole) {
     setAccessBusyUserID(access.user_id);
-    setAccessError("");
     try {
       const updated = await api.upsertAccess(id, access.user_id, role);
       setAccessList((prev) => prev.map((item) => (item.user_id === access.user_id ? { ...item, ...updated } : item)));
-    } catch {
-      setAccessError("Could not update access.");
+    } catch (err) {
+      notifyError(err, "update-access");
     } finally {
       setAccessBusyUserID("");
     }
@@ -611,12 +616,11 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
 
   async function revokeAccess(access: DocumentAccess) {
     setAccessBusyUserID(access.user_id);
-    setAccessError("");
     try {
       await api.deleteAccess(id, access.user_id);
       setAccessList((prev) => prev.filter((item) => item.user_id !== access.user_id));
-    } catch {
-      setAccessError("Could not revoke access.");
+    } catch (err) {
+      notifyError(err, "revoke-access");
     } finally {
       setAccessBusyUserID("");
     }
@@ -629,11 +633,10 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   }
 
   async function refreshComments() {
-    setCommentsError("");
     try {
       setComments(await api.listComments(id, true));
-    } catch {
-      setCommentsError("Could not load comments.");
+    } catch (err) {
+      notifyError(err, "list-comments");
     }
   }
 
@@ -642,7 +645,6 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     const body = commentBody.trim();
     if (!body) return;
     setCommentSubmitting(true);
-    setCommentsError("");
     try {
       const comment = await api.createComment(
         id,
@@ -654,25 +656,23 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
       setCommentBody("");
       setCommentPopup(null);
       setCommentsPanelOpen(true);
-    } catch {
-      setCommentsError("Could not add comment.");
+    } catch (err) {
+      notifyError(err, "create-comment");
     } finally {
       setCommentSubmitting(false);
     }
   }
 
   async function resolveReviewComment(commentID: string) {
-    setCommentsError("");
     try {
       const comment = await api.resolveComment(id, commentID);
       setComments((prev) => prev.map((item) => (item.id === commentID ? comment : item)));
-    } catch {
-      setCommentsError("Could not resolve comment.");
+    } catch (err) {
+      notifyError(err, "resolve-comment");
     }
   }
 
   async function deleteReviewComment(commentID: string) {
-    setCommentsError("");
     try {
       await api.deleteComment(id, commentID);
       setComments((prev) => prev.filter((item) => item.id !== commentID));
@@ -680,8 +680,8 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
         selectComment(null);
       }
       setPendingCommentDelete(null);
-    } catch {
-      setCommentsError("Could not delete comment.");
+    } catch (err) {
+      notifyError(err, "delete-comment");
     }
   }
 
@@ -813,7 +813,8 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
         version: latest.version,
         createdAt: latest.created_at,
       });
-    } catch {
+    } catch (err) {
+      notifyError(err, "export-status");
       setExportStatus({ state: "none" });
     }
   }
@@ -829,7 +830,8 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
       setPublishState("saved");
       if (exportOpen) void refreshExportStatus();
       setTimeout(() => setPublishState((s) => (s === "saved" ? "idle" : s)), 1800);
-    } catch {
+    } catch (err) {
+      notifyError(err, "publish-snapshot");
       setPublishState("error");
       setTimeout(() => setPublishState((s) => (s === "error" ? "idle" : s)), 2500);
     }
@@ -852,9 +854,9 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
         await api.publishSnapshot(id, ytext.toString());
         setPublishState("saved");
         setTimeout(() => setPublishState((s) => (s === "saved" ? "idle" : s)), 1800);
-      } catch {
+      } catch (err) {
         setExportBusy("");
-        alert("Could not publish the latest editor content.");
+        notifyError(err, "publish-before-export");
         return;
       }
     }
@@ -869,7 +871,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     }
     if (!res.ok) {
       setExportBusy("");
-      alert("Could not export Markdown.");
+      notifyError(new ApiError(res.status, "Could not export Markdown."), "export-markdown");
       return;
     }
     const blob = await res.blob();
@@ -898,7 +900,6 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   async function openHistory() {
     setHistoryOpen(true);
     setHistoryLoading(true);
-    setHistoryError("");
     try {
       const list = await api.listSnapshots(id);
       setSnapshots(list);
@@ -910,8 +911,8 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
       } else {
         setSnapshotBody(null);
       }
-    } catch {
-      setHistoryError("Could not load document history.");
+    } catch (err) {
+      notifyError(err, "open-history");
     } finally {
       setHistoryLoading(false);
     }
@@ -929,7 +930,8 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     try {
       const { updates } = await api.getAttribution(id);
       setBlameMap(computeBlame(updates));
-    } catch {
+    } catch (err) {
+      notifyError(err, "load-blame");
       setBlameActive(false);
     } finally {
       setBlameLoading(false);
@@ -939,13 +941,12 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   async function chooseSnapshot(index: number) {
     setSelectedSnapshot(index);
     setSnapshotBody(null);
-    setHistoryError("");
     const snap = snapshots[index];
     if (!snap) return;
     try {
       setSnapshotBody(await api.getSnapshot(id, snap.version));
-    } catch {
-      setHistoryError("Could not load that snapshot.");
+    } catch (err) {
+      notifyError(err, "load-snapshot");
     }
   }
 
@@ -957,27 +958,21 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     );
     if (!ok) return;
     setRestoring(true);
-    setHistoryError("");
     try {
       const res = await api.restoreSnapshot(id, snap.version);
       setTitle(limitDocumentTitle(res.document.title));
       setTitleDraft(limitDocumentTitle(res.document.title));
       setHistoryOpen(false);
-    } catch {
-      setHistoryError("Could not restore that snapshot.");
+    } catch (err) {
+      notifyError(err, "restore-snapshot");
     } finally {
       setRestoring(false);
     }
   }
 
   const canUpload = connState !== "readonly";
-  const [uploadError, setUploadError] = useState<string | null>(null);
   const [draggingAsset, setDraggingAsset] = useState(false);
-  useEffect(() => {
-    if (!uploadError) return;
-    const t = setTimeout(() => setUploadError(null), 4500);
-    return () => clearTimeout(t);
-  }, [uploadError]);
+  const reportUploadError = (msg: string) => notifyError(new ApiError(0, msg), "upload-asset");
 
   const mdComponents = useMemo<Components>(
     () => ({
@@ -1164,7 +1159,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
           docs={docs}
           ownerID={me.id}
           currentDocID={id}
-          error={docsLoadError}
+          loadFailed={docsLoadFailed}
           collapsed={docsSidebarCollapsed}
           onCollapsedChange={setDocsSidebarCollapsed}
         />
@@ -1237,7 +1232,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                     if (!editor || !monaco) return;
                     void uploadAndInsertImagesMonaco(editor, monaco, id, files, {
                       canUpload: () => canUpload,
-                      onError: (msg: string) => setUploadError(msg),
+                      onError: reportUploadError,
                     }, offset);
                   }}
                   onDragState={setDraggingAsset}
@@ -1248,14 +1243,6 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                     aria-hidden
                   >
                     Drop image to upload
-                  </div>
-                )}
-                {uploadError && (
-                  <div
-                    role="alert"
-                    className="absolute bottom-3 left-1/2 z-30 -translate-x-1/2 rounded-md border border-red-500/30 bg-red-50 px-3 py-2 text-xs text-red-700 shadow-sm dark:bg-red-950/40 dark:text-red-200"
-                  >
-                    {uploadError}
                   </div>
                 )}
                 <input
@@ -1274,7 +1261,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                     if (!editor || !monaco || files.length === 0) return;
                     void uploadAndInsertImagesMonaco(editor, monaco, id, files, {
                       canUpload: () => canUpload,
-                      onError: (msg: string) => setUploadError(msg),
+                      onError: reportUploadError,
                     }, offset ?? undefined);
                   }}
                 />
@@ -1321,7 +1308,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
           <CommentsPanel
             panelRef={commentsPanelRef}
             comments={comments}
-            error={commentsError}
+            error=""
             selectedCommentId={selectedCommentId}
             onClose={() => {
               setCommentsPanelOpen(false);
@@ -1402,10 +1389,10 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
             kind={commentPopup.kind}
             body={commentBody}
             submitting={commentSubmitting}
-            error={commentsError}
+            error=""
             onChange={setCommentBody}
             onSubmit={() => void createReviewComment()}
-            onCancel={() => { setCommentPopup(null); setCommentBody(""); setCommentsError(""); }}
+            onCancel={() => { setCommentPopup(null); setCommentBody(""); }}
           />
         </>
       )}
@@ -1554,7 +1541,6 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                   ))}
                 </ul>
               )}
-              {accessError && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{accessError}</p>}
               {pendingInvites.length > 0 && (
                 <div className="mt-4">
                   <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide opacity-60">Pending invites</h4>
@@ -1688,11 +1674,6 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                   </div>
                 </div>
               )}
-          {historyError && (
-            <p className="mt-3 rounded-md border border-red-500/20 bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">
-              {historyError}
-            </p>
-          )}
         </div>
       </Modal>
     </div>
@@ -2097,14 +2078,14 @@ function DocumentSidebar({
   docs,
   ownerID,
   currentDocID,
-  error,
+  loadFailed,
   collapsed,
   onCollapsedChange,
 }: {
   docs: Document[];
   ownerID: string;
   currentDocID: string;
-  error: string;
+  loadFailed: boolean;
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
 }) {
@@ -2143,9 +2124,9 @@ function DocumentSidebar({
           collapsed ? "pointer-events-none opacity-0" : "opacity-100 delay-75"
         }`}
       >
-        {error && (
-          <p className="mb-3 rounded-md border border-red-500/20 bg-red-50 px-2 py-1.5 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-300">
-            {error}
+        {loadFailed && (
+          <p className="mb-3 rounded-md border border-current/15 bg-current/[0.04] px-2 py-1.5 text-xs opacity-70">
+            Couldn&apos;t load your other documents.
           </p>
         )}
         <DocumentSidebarSection

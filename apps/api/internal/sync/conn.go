@@ -117,6 +117,13 @@ func (c *conn) closeWithCode(code int, reason string) {
 			websocket.FormatCloseMessage(code, reason),
 		)
 		_ = c.ws.Close()
+		// 4008/4010/4404 events are user-visible and a hot signal during
+		// triage — emit a warn line with enough fields to pin the session.
+		log.Warn().
+			Int("code", code).
+			Str("reason", reason).
+			Str("user_id", c.principal.Subject).
+			Msg("ws close")
 	})
 }
 

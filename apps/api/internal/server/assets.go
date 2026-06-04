@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/abhishek/sync-scribe/api/internal/auth"
+	"github.com/abhishek/sync-scribe/api/internal/httpx"
 	"github.com/abhishek/sync-scribe/api/internal/store"
 )
 
@@ -59,21 +60,21 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 
 	doc, err := s.store.GetDocument(r.Context(), id, p.Subject)
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	if !s.store.CanWrite(r.Context(), doc, p.Subject) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		httpx.WriteError(w, r, httpx.Forbidden("You only have read access to this document.", nil))
 		return
 	}
 
 	if err := r.ParseMultipartForm(store.MaxAssetBytes + 1024); err != nil {
-		http.Error(w, "bad multipart: "+err.Error(), http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Could not read the uploaded form.", err))
 		return
 	}
 	file, header, err := r.FormFile("file")
 	if err != nil {
-		http.Error(w, "file field required", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("A file field is required.", err))
 		return
 	}
 	defer file.Close()
@@ -83,21 +84,21 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		ct = r.FormValue("content_type")
 	}
 	if _, allowed := allowedAssetTypes[ct]; !allowed {
-		http.Error(w, "unsupported content type", http.StatusUnsupportedMediaType)
+		httpx.WriteError(w, r, httpx.UnsupportedMedia("That file type isn't supported.", nil))
 		return
 	}
 	if header.Size > store.MaxAssetBytes {
-		http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
+		httpx.WriteError(w, r, httpx.PayloadTooLarge("File is too large (max 8 MiB).", nil))
 		return
 	}
 
 	data, err := io.ReadAll(io.LimitReader(file, store.MaxAssetBytes+1))
 	if err != nil {
-		http.Error(w, "read failed", http.StatusInternalServerError)
+		httpx.WriteError(w, r, httpx.Internal("Could not read the uploaded file.", err))
 		return
 	}
 	if len(data) > store.MaxAssetBytes {
-		http.Error(w, "file too large", http.StatusRequestEntityTooLarge)
+		httpx.WriteError(w, r, httpx.PayloadTooLarge("File is too large (max 8 MiB).", nil))
 		return
 	}
 
@@ -111,7 +112,7 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 		SizeBytes:   len(data),
 	}, data)
 	if err != nil {
-		http.Error(w, "insert failed: "+err.Error(), http.StatusInternalServerError)
+		httpx.WriteError(w, r, httpx.Internal("Could not save the uploaded file.", err))
 		return
 	}
 
@@ -136,24 +137,24 @@ func (s *Server) getAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	assetID, err := uuid.Parse(chi.URLParam(r, "assetID"))
 	if err != nil {
-		http.Error(w, "bad asset id", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Asset id is not a valid UUID.", err))
 		return
 	}
 
 	// Read access required — same as fetching the document body.
 	doc, err := s.store.GetDocument(r.Context(), id, p.Subject)
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	if !s.store.CanRead(r.Context(), doc, p.Subject) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		httpx.WriteError(w, r, httpx.Forbidden("You don't have access to this asset.", nil))
 		return
 	}
 
 	blob, err := s.store.GetAsset(r.Context(), id, assetID)
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 
@@ -172,17 +173,17 @@ func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
 	}
 	doc, err := s.store.GetDocument(r.Context(), id, p.Subject)
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	if !s.store.CanRead(r.Context(), doc, p.Subject) {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		httpx.WriteError(w, r, httpx.Forbidden("You don't have access to this document.", nil))
 		return
 	}
 
 	assets, err := s.store.ListAssets(r.Context(), id)
 	if err != nil {
-		http.Error(w, "list failed", http.StatusInternalServerError)
+		httpx.WriteError(w, r, httpx.Internal("Could not list assets.", err))
 		return
 	}
 	writeJSON(w, http.StatusOK, assets)

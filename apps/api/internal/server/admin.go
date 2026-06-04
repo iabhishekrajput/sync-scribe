@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/abhishek/sync-scribe/api/internal/httpx"
 )
 
 // AdminDocStat holds per-document growth stats for the admin endpoint.
@@ -38,7 +40,7 @@ func (s *Server) adminStats(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
 		token := strings.TrimPrefix(auth, "Bearer ")
 		if token != secret {
-			http.Error(w, "forbidden", http.StatusForbidden)
+			httpx.WriteError(w, r, httpx.Forbidden("Admin bearer token missing or incorrect.", nil))
 			return
 		}
 	}
@@ -65,7 +67,7 @@ ORDER BY last_activity_at DESC NULLS LAST
 LIMIT 500
 `)
 	if err != nil {
-		http.Error(w, "query failed", http.StatusInternalServerError)
+		httpx.WriteError(w, r, httpx.Internal("Stats query failed.", err))
 		return
 	}
 	defer rows.Close()
@@ -87,7 +89,7 @@ LIMIT 500
 			&doc.LatestSnapBytes,
 			&doc.LastActivityAt,
 		); err != nil {
-			http.Error(w, "scan failed", http.StatusInternalServerError)
+			httpx.WriteError(w, r, httpx.Internal("Stats scan failed.", err))
 			return
 		}
 		stats.TotalDocuments++
@@ -97,7 +99,7 @@ LIMIT 500
 		stats.Documents = append(stats.Documents, doc)
 	}
 	if err := rows.Err(); err != nil {
-		http.Error(w, "rows error", http.StatusInternalServerError)
+		httpx.WriteError(w, r, httpx.Internal("Stats row iteration failed.", err))
 		return
 	}
 
@@ -113,7 +115,7 @@ func (s *Server) adminRetentionRuns(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
 		token := strings.TrimPrefix(auth, "Bearer ")
 		if token != secret {
-			http.Error(w, "forbidden", http.StatusForbidden)
+			httpx.WriteError(w, r, httpx.Forbidden("Admin bearer token missing or incorrect.", nil))
 			return
 		}
 	}
@@ -128,7 +130,7 @@ ORDER BY started_at DESC
 LIMIT 50
 `)
 	if err != nil {
-		http.Error(w, "query failed", http.StatusInternalServerError)
+		httpx.WriteError(w, r, httpx.Internal("Retention runs query failed.", err))
 		return
 	}
 	defer rows.Close()
@@ -146,13 +148,13 @@ LIMIT 50
 		var rr run
 		if err := rows.Scan(&rr.ID, &rr.StartedAt, &rr.FinishedAt,
 			&rr.SnapshotsDeleted, &rr.UpdatesDeleted, &rr.DocsProcessed); err != nil {
-			http.Error(w, "scan failed", http.StatusInternalServerError)
+			httpx.WriteError(w, r, httpx.Internal("Retention scan failed.", err))
 			return
 		}
 		out = append(out, rr)
 	}
 	if err := rows.Err(); err != nil {
-		http.Error(w, "rows error", http.StatusInternalServerError)
+		httpx.WriteError(w, r, httpx.Internal("Retention row iteration failed.", err))
 		return
 	}
 

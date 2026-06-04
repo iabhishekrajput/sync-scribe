@@ -1,18 +1,16 @@
 "use client";
 
 import { getAccessToken } from "./auth";
+import { ApiError, parseApiError } from "./errors";
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080";
 
-export class ApiError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
-  }
-}
+// Re-export so existing imports of ApiError from "./api" keep working.
+export { ApiError };
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const token = await getAccessToken();
-  if (!token) throw new ApiError(401, "unauthenticated");
+  if (!token) throw new ApiError(401, "Sign in to continue.", "unauthenticated");
 
   const res = await fetch(`${API}${path}`, {
     method,
@@ -25,7 +23,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   });
   if (res.status === 204) return undefined as T;
   if (!res.ok) {
-    throw new ApiError(res.status, (await res.text().catch(() => "")) || res.statusText);
+    throw await parseApiError(res);
   }
   const ct = res.headers.get("content-type") ?? "";
   if (ct.includes("application/json")) return res.json() as Promise<T>;
@@ -214,14 +212,14 @@ export const api = {
   listSnapshots: (id: string) => request<SnapshotSummary[]>("GET", `/api/documents/${id}/snapshots`),
   publishSnapshot: async (id: string, content: string): Promise<{ version: number }> => {
     const token = await getAccessToken();
-    if (!token) throw new ApiError(401, "unauthenticated");
+    if (!token) throw new ApiError(401, "Sign in to continue.", "unauthenticated");
     const res = await fetch(`${API}/api/documents/${id}/snapshots`, {
       method: "POST",
       credentials: "include",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "text/markdown" },
       body: content,
     });
-    if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => res.statusText));
+    if (!res.ok) throw await parseApiError(res);
     return res.json();
   },
   getSnapshot: (id: string, version: number) =>
@@ -234,7 +232,7 @@ export const api = {
   listAssets: (id: string) => request<Asset[]>("GET", `/api/documents/${id}/assets`),
   uploadAsset: async (id: string, file: File): Promise<{ asset: Asset; url: string }> => {
     const token = await getAccessToken();
-    if (!token) throw new ApiError(401, "unauthenticated");
+    if (!token) throw new ApiError(401, "Sign in to continue.", "unauthenticated");
     const form = new FormData();
     form.append("file", file);
     const res = await fetch(`${API}/api/documents/${id}/assets`, {
@@ -243,16 +241,16 @@ export const api = {
       headers: { Authorization: `Bearer ${token}` },
       body: form,
     });
-    if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => res.statusText));
+    if (!res.ok) throw await parseApiError(res);
     return res.json();
   },
   fetchAssetBlobURL: async (id: string, assetId: string): Promise<string> => {
     const token = await getAccessToken();
-    if (!token) throw new ApiError(401, "unauthenticated");
+    if (!token) throw new ApiError(401, "Sign in to continue.", "unauthenticated");
     const res = await fetch(`${API}/api/documents/${id}/assets/${assetId}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => res.statusText));
+    if (!res.ok) throw await parseApiError(res);
     const blob = await res.blob();
     return URL.createObjectURL(blob);
   },
@@ -277,7 +275,7 @@ export const api = {
     request<void>("DELETE", `/api/documents/${id}/share-links/${encodeURIComponent(token)}`),
   publicShareInfo: async (token: string): Promise<PublicShareInfo> => {
     const res = await fetch(`${API}/share/${encodeURIComponent(token)}`);
-    if (!res.ok) throw new ApiError(res.status, await res.text().catch(() => res.statusText));
+    if (!res.ok) throw await parseApiError(res);
     return res.json();
   },
 

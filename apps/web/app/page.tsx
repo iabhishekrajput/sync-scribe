@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api, type Document } from "./lib/api";
 import { fetchMe } from "./lib/auth";
+import { notifyError } from "./lib/errors";
 import { TopBar } from "./components/TopBar";
 
 type Me = { id: string; email: string; display_name: string };
@@ -16,9 +17,8 @@ export default function Dashboard() {
   const [docs, setDocs] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
   const [docsLoading, setDocsLoading] = useState(false);
-  const [loadError, setLoadError] = useState("");
+  const [loadFailed, setLoadFailed] = useState(false);
   const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState("");
   const [tab, setTab] = useState<DocumentTab>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
@@ -47,14 +47,16 @@ export default function Dashboard() {
     if (!me) return;
     let alive = true;
     setDocsLoading(true);
-    setLoadError("");
+    setLoadFailed(false);
     api
       .listDocuments({ q: debouncedSearchQuery, scope: tab, limit: 50 })
       .then((list) => {
         if (alive) setDocs(list);
       })
-      .catch(() => {
-        if (alive) setLoadError("Could not load documents. Check that the API is running and try again.");
+      .catch((err) => {
+        if (!alive) return;
+        setLoadFailed(true);
+        notifyError(err, "load-documents");
       })
       .finally(() => {
         if (alive) setDocsLoading(false);
@@ -95,19 +97,17 @@ export default function Dashboard() {
 
   async function onCreate() {
     setCreating(true);
-    setCreateError("");
     try {
       const d = await api.createDocument();
       router.push(`/d/${d.id}`);
-    } catch {
-      setCreateError("Could not create a document.");
+    } catch (err) {
+      notifyError(err, "create-document");
       setCreating(false);
     }
   }
 
   async function onImportFile(file: File) {
     setCreating(true);
-    setCreateError("");
     try {
       const text = await file.text();
       const title = file.name.replace(/\.(md|markdown|txt)$/i, "").slice(0, 200) || "Imported";
@@ -115,17 +115,22 @@ export default function Dashboard() {
       // Editor seeds the empty Yjs document from this on first live sync.
       sessionStorage.setItem(`syncscribe.import.${d.id}`, text);
       router.push(`/d/${d.id}`);
-    } catch {
-      setCreateError("Could not import that file.");
+    } catch (err) {
+      notifyError(err, "import-document");
       setCreating(false);
     }
   }
 
   async function onDelete(id: string) {
     if (!confirm("Delete this document?")) return;
-    await api.deleteDocument(id);
-    setDocs((d) => d.filter((x) => x.id !== id));
-    setOpenMenuID(null);
+    try {
+      await api.deleteDocument(id);
+      setDocs((d) => d.filter((x) => x.id !== id));
+    } catch (err) {
+      notifyError(err, "delete-document");
+    } finally {
+      setOpenMenuID(null);
+    }
   }
 
   async function onRename(doc: Document) {
@@ -138,6 +143,8 @@ export default function Dashboard() {
     try {
       const renamed = await api.renameDocument(doc.id, next);
       setDocs((prev) => prev.map((item) => (item.id === renamed.id ? renamed : item)));
+    } catch (err) {
+      notifyError(err, "rename-document");
     } finally {
       setOpenMenuID(null);
     }
@@ -205,17 +212,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {loadError && (
-          <div className="mx-auto mb-4 max-w-6xl rounded-md border border-red-500/20 bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">
-            {loadError}
-          </div>
-        )}
-        {createError && (
-          <div className="mx-auto mb-4 max-w-6xl rounded-md border border-red-500/20 bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-300">
-            {createError}
-          </div>
-        )}
-
         <div className="mx-auto mb-5 flex max-w-6xl flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="inline-grid grid-cols-3 gap-1 rounded-md bg-current/5 p-1">
             {(["all", "owned", "shared"] as const).map((nextTab) => (
@@ -261,7 +257,7 @@ export default function Dashboard() {
         ) : visibleDocs.length === 0 ? (
           <div className="mx-auto max-w-6xl rounded-lg border border-dashed border-current/20 p-10 text-center">
             <p className="text-sm opacity-70">
-              {loadError
+              {loadFailed
                 ? "Documents will appear here when loading succeeds."
                 : debouncedSearchQuery
                   ? "No documents match your search."
@@ -271,7 +267,7 @@ export default function Dashboard() {
                   ? "No documents yet."
                   : "No shared documents yet."}
             </p>
-            {(tab === "all" || tab === "owned") && !loadError && !debouncedSearchQuery && (
+            {(tab === "all" || tab === "owned") && !loadFailed && !debouncedSearchQuery && (
               <button onClick={onCreate} className="mt-3 text-sm underline">
                 Create your first one
               </button>

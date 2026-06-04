@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog/log"
 
 	docstore "github.com/abhishek/sync-scribe/api/internal/store"
 )
@@ -188,6 +189,11 @@ func (s *docSession) loop() {
 			cancel()
 			if err != nil {
 				wsErrors.WithLabelValues("persist").Inc()
+				log.Error().Err(err).
+					Str("doc_id", s.docID.String()).
+					Str("origin_user", up.originUser).
+					Int("bytes", len(up.blob)).
+					Msg("persist update")
 				continue
 			}
 			updatesPersisted.Inc()

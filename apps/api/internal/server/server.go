@@ -10,6 +10,7 @@ import (
 
 	"github.com/abhishek/sync-scribe/api/internal/auth"
 	"github.com/abhishek/sync-scribe/api/internal/config"
+	"github.com/abhishek/sync-scribe/api/internal/httpx"
 	"github.com/abhishek/sync-scribe/api/internal/store"
 	syncpkg "github.com/abhishek/sync-scribe/api/internal/sync"
 )
@@ -49,7 +50,9 @@ func (s *Server) Routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(middleware.Recoverer)
+	r.Use(httpx.RequestLogger)
+	r.Use(httpx.AccessLog)
+	r.Use(httpx.Recoverer)
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{s.cfg.FrontendBaseURL},
 		AllowedMethods:   []string{"GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"},
