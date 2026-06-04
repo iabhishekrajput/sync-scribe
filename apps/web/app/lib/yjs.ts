@@ -52,6 +52,8 @@ export type SaveState = "saved" | "saving" | "offline";
 
 const WS_BASE = process.env.NEXT_PUBLIC_WS_BASE_URL ?? "ws://localhost:8080";
 
+export type DisconnectLevel = "error" | "info";
+
 export type SyncProviderOptions = {
   docId: string;
   doc: Y.Doc;
@@ -59,9 +61,38 @@ export type SyncProviderOptions = {
   onState?: (s: ConnectionState) => void;
   /** Realtime persistence indicator — fires whenever pending↔acked moves. */
   onSaveState?: (s: SaveState) => void;
+  /**
+   * Fires once per terminal WS close with a user-facing reason mapped from
+   * the close code. `level === "error"` for revocations / expiries that the
+   * UI should surface as a toast; `"info"` for recoverable cases like RESYNC.
+   */
+  onDisconnectReason?: (reason: string, level: DisconnectLevel) => void;
   // When set, authenticate the WS via ?share_token=… instead of the user's
   // access token. Used by the public read page (/p/[token]).
   shareToken?: string;
+};
+
+const DISCONNECT_REASONS: Record<number, { reason: string; level: DisconnectLevel }> = {
+  [CLOSE_AUTH_EXPIRED]: {
+    reason: "Your session has expired. Sign in again to continue.",
+    level: "error",
+  },
+  [CLOSE_PERMISSION_DENIED]: {
+    reason: "Your access to this document has been revoked.",
+    level: "error",
+  },
+  [CLOSE_DOC_DELETED]: {
+    reason: "This document has been deleted.",
+    level: "error",
+  },
+  [CLOSE_RATE_LIMITED]: {
+    reason: "You're sending updates too fast — pausing briefly.",
+    level: "error",
+  },
+  [CLOSE_RESYNC]: {
+    reason: "Reconnecting to resync the document…",
+    level: "info",
+  },
 };
 
 // SyncProvider mirrors a Y.Doc against the server over a single WS. It owns
@@ -259,6 +290,11 @@ export class SyncProvider {
     ws.onclose = (ev: CloseEvent) => {
       this.ws = null;
       if (this.closed) return;
+
+      const mapped = DISCONNECT_REASONS[ev.code];
+      if (mapped) {
+        this.opts.onDisconnectReason?.(mapped.reason, mapped.level);
+      }
 
       // Terminal codes — stop trying. The user needs to re-auth, the doc is
       // gone, or the server explicitly said this principal can't be here.

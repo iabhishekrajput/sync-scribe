@@ -6,7 +6,9 @@ import { Awareness } from "y-protocols/awareness";
 import { PanelGroup, Panel, PanelResizeHandle } from "react-resizable-panels";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { toast } from "sonner";
 import { api, type PublicShareInfo } from "../../lib/api";
+import { ApiError, notifyError } from "../../lib/errors";
 import { ThemeToggle } from "../../components/ThemeToggle";
 import { SyncProvider, type ConnectionState, type SaveState } from "../../lib/yjs";
 import { TypingPill } from "../../components/TypingPill";
@@ -85,9 +87,15 @@ export default function PublicSharePage({ params }: { params: Promise<{ token: s
           shareToken: token,
           onState: setConnState,
           onSaveState: setServerSaveState,
+          onDisconnectReason: (reason, level) => {
+            if (level === "error") notifyError(new ApiError(0, reason), "ws-close");
+            else toast.info(reason);
+          },
         });
-      } catch {
-        if (alive) setLoadError("This share link is invalid, revoked, or expired.");
+      } catch (err) {
+        if (!alive) return;
+        notifyError(err, "share-info");
+        setLoadError("This share link is invalid, revoked, or expired.");
       }
     })();
     return () => {

@@ -23,6 +23,7 @@
     "rehype-pretty-code": "^0.14.0",
     "remark-gfm": "^4.0.0",
     "shiki": "^1.24.0",
+    "sonner": "^1.7.0",
     "y-monaco": "^0.1.6",
     "y-protocols": "^1.0.6",
     "yjs": "^13.6.20"

@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/abhishek/sync-scribe/api/internal/auth"
+	"github.com/abhishek/sync-scribe/api/internal/httpx"
 	docstore "github.com/abhishek/sync-scribe/api/internal/store"
 )
 
@@ -72,7 +73,7 @@ func originMatches(got, allowed string) bool {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	docID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
-		http.Error(w, "bad doc id", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Document id is not a valid UUID.", err))
 		return
 	}
 
@@ -83,7 +84,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if !h.ips.tryAcquire(ip) {
 		ipCapRejects.Inc()
-		http.Error(w, "too many connections from this address", http.StatusTooManyRequests)
+		httpx.WriteError(w, r, httpx.RateLimited("Too many connections from this address.", nil))
 		return
 	}
 	releaseIP := func() { h.ips.release(ip) }
@@ -110,14 +111,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		cancel()
 		if err != nil {
 			wsErrors.WithLabelValues("authz").Inc()
-			http.Error(w, "share link invalid", http.StatusForbidden)
+			httpx.WriteError(w, r, httpx.Forbidden("This share link is invalid, revoked, or expired.", err))
 			return
 		}
 		// Strict: WS route param must match the link's doc. Prevents one
 		// link being reused for a different doc by URL fiddling.
 		if d.ID != docID {
 			wsErrors.WithLabelValues("authz").Inc()
-			http.Error(w, "doc mismatch", http.StatusForbidden)
+			httpx.WriteError(w, r, httpx.Forbidden("Share link does not match this document.", nil))
 			return
 		}
 		principal = &auth.Principal{
@@ -131,7 +132,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p, err := h.Provider.PrincipalFromRequest(r)
 		if err != nil {
 			wsErrors.WithLabelValues("auth").Inc()
-			http.Error(w, "unauthenticated", http.StatusUnauthorized)
+			httpx.WriteError(w, r, httpx.Unauthenticated("Sign in to continue.", err))
 			return
 		}
 		principal = p
@@ -148,7 +149,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			DisplayName: displayName,
 		}); err != nil {
 			wsErrors.WithLabelValues("auth").Inc()
-			http.Error(w, "register principal", http.StatusInternalServerError)
+			httpx.WriteError(w, r, httpx.Internal("Could not register your account.", err))
 			return
 		}
 
@@ -157,7 +158,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		cancel()
 		if err != nil {
 			wsErrors.WithLabelValues("authz").Inc()
-			http.Error(w, "no access", http.StatusForbidden)
+			httpx.WriteError(w, r, httpx.Forbidden("You don't have access to this document.", err))
 			return
 		}
 		doc = d

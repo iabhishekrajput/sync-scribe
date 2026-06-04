@@ -13,13 +13,14 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/abhishek/sync-scribe/api/internal/auth"
+	"github.com/abhishek/sync-scribe/api/internal/httpx"
 	"github.com/abhishek/sync-scribe/api/internal/store"
 )
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	p := auth.FromContext(r.Context())
 	if p == nil {
-		auth.WriteUnauthorized(w, "no principal")
+		httpx.WriteError(w, r, httpx.Unauthenticated("Sign in to continue.", nil))
 		return
 	}
 
@@ -37,7 +38,7 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		DisplayName: displayName,
 	})
 	if err != nil {
-		http.Error(w, "upsert: "+err.Error(), http.StatusInternalServerError)
+		httpx.WriteError(w, r, httpx.Internal("Could not save your profile.", err))
 		return
 	}
 	writeJSON(w, http.StatusOK, u)
@@ -57,14 +58,14 @@ func (s *Server) listDocuments(w http.ResponseWriter, r *http.Request) {
 		scope = "all"
 	}
 	if scope != "all" && scope != "owned" && scope != "shared" {
-		http.Error(w, "invalid scope", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Unknown scope. Use all, owned, or shared.", nil))
 		return
 	}
 	limit := 50
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		n, err := strconv.Atoi(raw)
 		if err != nil || n < 1 {
-			http.Error(w, "invalid limit", http.StatusBadRequest)
+			httpx.WriteError(w, r, httpx.BadRequest("Limit must be a positive integer.", err))
 			return
 		}
 		limit = min(n, 100)
@@ -75,7 +76,7 @@ func (s *Server) listDocuments(w http.ResponseWriter, r *http.Request) {
 		Limit: limit,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		httpx.WriteError(w, r, httpx.Internal("Could not load your documents.", err))
 		return
 	}
 	writeJSON(w, http.StatusOK, docs)
@@ -99,7 +100,7 @@ func (s *Server) createDocument(w http.ResponseWriter, r *http.Request) {
 
 	doc, err := s.store.CreateDocument(r.Context(), p.Subject, strings.TrimSpace(in.Title))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		httpx.WriteError(w, r, httpx.Internal("Could not create the document.", err))
 		return
 	}
 	if in.Source == "import:markdown" {
@@ -118,7 +119,7 @@ func (s *Server) getDocument(w http.ResponseWriter, r *http.Request) {
 
 	doc, err := s.store.GetDocument(r.Context(), id, p.Subject)
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"document": doc})
@@ -132,7 +133,7 @@ func (s *Server) listAccess(w http.ResponseWriter, r *http.Request) {
 	}
 	access, err := s.store.ListAccess(r.Context(), id, p.Subject)
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, access)
@@ -151,12 +152,12 @@ func (s *Server) upsertAccess(w http.ResponseWriter, r *http.Request) {
 	}
 	var in accessInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, "bad body", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Could not parse the request body.", err))
 		return
 	}
 	access, err := s.store.UpsertAccess(r.Context(), id, p.Subject, strings.TrimSpace(in.UserID), strings.TrimSpace(in.Role))
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	_ = s.store.RecordActivity(r.Context(), id, p.Subject, "access.granted", map[string]any{"user_id": access.UserID, "role": access.Role})
@@ -172,11 +173,11 @@ func (s *Server) deleteAccess(w http.ResponseWriter, r *http.Request) {
 	}
 	userID := chi.URLParam(r, "userID")
 	if userID == "" {
-		http.Error(w, "user id required", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("User id is required.", nil))
 		return
 	}
 	if err := s.store.DeleteAccess(r.Context(), id, p.Subject, userID); err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	_ = s.store.RecordActivity(r.Context(), id, p.Subject, "access.revoked", map[string]any{"user_id": userID})
@@ -196,17 +197,17 @@ func (s *Server) renameDocument(w http.ResponseWriter, r *http.Request) {
 	}
 	var in renameInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, "bad body", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Could not parse the request body.", err))
 		return
 	}
 	in.Title = strings.TrimSpace(in.Title)
 	if in.Title == "" {
-		http.Error(w, "title required", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Title is required.", nil))
 		return
 	}
 	doc, err := s.store.RenameDocument(r.Context(), id, p.Subject, in.Title)
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, doc)
@@ -219,7 +220,7 @@ func (s *Server) deleteDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.SoftDeleteDocument(r.Context(), id, p.Subject); err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -233,7 +234,7 @@ func (s *Server) listSnapshots(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshots, err := s.store.ListSnapshots(r.Context(), id, p.Subject)
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, snapshots)
@@ -251,7 +252,7 @@ func (s *Server) getSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	snapshot, err := s.store.GetSnapshot(r.Context(), id, version, p.Subject)
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, snapshot)
@@ -269,23 +270,23 @@ func (s *Server) publishSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	doc, role, err := s.store.ResolveDocumentRole(r.Context(), id, p.Subject)
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	if !store.CanRoleWrite(role) {
-		http.Error(w, "read-only", http.StatusForbidden)
+		httpx.WriteError(w, r, httpx.Forbidden("You only have read access to this document.", nil))
 		return
 	}
 	// Cap at 4 MiB — beyond that, the doc is past the markdown editor's
 	// reasonable scope and someone is probably misusing the endpoint.
 	body, err := readLimitedBody(r, 4<<20)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Snapshot body is invalid or too large.", err))
 		return
 	}
 	version, err := s.store.PutSnapshot(r.Context(), doc.ID, p.Subject, body)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		httpx.WriteError(w, r, httpx.Internal("Could not save the snapshot.", err))
 		return
 	}
 	_ = s.store.RecordActivity(r.Context(), doc.ID, p.Subject, "snapshot.published", map[string]any{"version": version})
@@ -304,7 +305,7 @@ func (s *Server) restoreSnapshot(w http.ResponseWriter, r *http.Request) {
 	}
 	doc, newVersion, err := s.store.RestoreSnapshot(r.Context(), id, version, p.Subject)
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	_ = s.store.RecordActivity(r.Context(), id, p.Subject, "snapshot.restored", map[string]any{"from_version": version, "version": newVersion})
@@ -322,16 +323,16 @@ func (s *Server) exportDocument(w http.ResponseWriter, r *http.Request) {
 		format = "md"
 	}
 	if format != "md" {
-		http.Error(w, "unsupported export format", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Export format must be md.", nil))
 		return
 	}
 	export, err := s.store.ExportMarkdown(r.Context(), id, p.Subject)
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidInput) {
-			http.Error(w, "latest snapshot is not exportable as markdown yet", http.StatusConflict)
+			httpx.WriteError(w, r, httpx.Conflict("Publish a snapshot before exporting markdown.", err))
 			return
 		}
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
@@ -357,7 +358,7 @@ func (s *Server) getAttribution(w http.ResponseWriter, r *http.Request) {
 	if raw := strings.TrimSpace(r.URL.Query().Get("sinceUpdateId")); raw != "" {
 		n, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || n < 0 {
-			http.Error(w, "invalid sinceUpdateId", http.StatusBadRequest)
+			httpx.WriteError(w, r, httpx.BadRequest("sinceUpdateId must be a non-negative integer.", err))
 			return
 		}
 		sinceUpdateID = n
@@ -367,7 +368,7 @@ func (s *Server) getAttribution(w http.ResponseWriter, r *http.Request) {
 		Limit:         limit,
 	})
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -398,7 +399,7 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
 
 	var in createInviteInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, "bad body", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Could not parse the request body.", err))
 		return
 	}
 	role := strings.TrimSpace(in.Role)
@@ -408,7 +409,7 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
 
 	invite, err := s.store.CreateInvite(r.Context(), id, p.Subject, strings.ToLower(strings.TrimSpace(in.Email)), role)
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	_ = s.store.RecordActivity(r.Context(), id, p.Subject, "invite.created", map[string]any{"email": invite.Email, "role": invite.Role})
@@ -420,7 +421,7 @@ func (s *Server) createInvite(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusCreated, invite)
 			return
 		}
-		http.Error(w, fmt.Sprintf("send invite email: %v", err), http.StatusBadGateway)
+		httpx.WriteError(w, r, httpx.BadGateway("Could not send the invite email.", err))
 		return
 	}
 	writeJSON(w, http.StatusCreated, invite)
@@ -434,7 +435,7 @@ func (s *Server) listInvites(w http.ResponseWriter, r *http.Request) {
 	}
 	invites, err := s.store.ListInvites(r.Context(), id, p.Subject)
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, invites)
@@ -448,11 +449,11 @@ func (s *Server) revokeInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	token := chi.URLParam(r, "token")
 	if token == "" {
-		http.Error(w, "token required", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Invite token is required.", nil))
 		return
 	}
 	if err := s.store.RevokeInvite(r.Context(), id, p.Subject, token); err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	_ = s.store.RecordActivity(r.Context(), id, p.Subject, "invite.canceled", map[string]any{"token": token})
@@ -467,17 +468,17 @@ func (s *Server) resendInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	token := chi.URLParam(r, "token")
 	if token == "" {
-		http.Error(w, "token required", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Invite token is required.", nil))
 		return
 	}
 	invite, err := s.store.ResendInvite(r.Context(), id, p.Subject, token)
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	_ = s.store.RecordActivity(r.Context(), id, p.Subject, "invite.resent", map[string]any{"email": invite.Email, "role": invite.Role})
 	if err := s.sendInviteEmail(invite); err != nil {
-		http.Error(w, fmt.Sprintf("send invite email: %v", err), http.StatusBadGateway)
+		httpx.WriteError(w, r, httpx.BadGateway("Could not send the invite email.", err))
 		return
 	}
 	writeJSON(w, http.StatusCreated, invite)
@@ -487,12 +488,12 @@ func (s *Server) claimInvite(w http.ResponseWriter, r *http.Request) {
 	p := auth.FromContext(r.Context())
 	token := chi.URLParam(r, "token")
 	if token == "" {
-		http.Error(w, "token required", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Invite token is required.", nil))
 		return
 	}
 	doc, err := s.store.ClaimInvite(r.Context(), token, p.Subject, strings.ToLower(strings.TrimSpace(p.Email)))
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"document": doc})
@@ -518,7 +519,7 @@ func parseDocID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 	raw := chi.URLParam(r, "id")
 	id, err := uuid.Parse(raw)
 	if err != nil {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Document id is not a valid UUID.", err))
 		return uuid.Nil, false
 	}
 	return id, true
@@ -527,23 +528,17 @@ func parseDocID(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 func parseVersion(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	version, err := strconv.ParseInt(chi.URLParam(r, "version"), 10, 64)
 	if err != nil || version <= 0 {
-		http.Error(w, "invalid version", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Snapshot version must be a positive integer.", err))
 		return 0, false
 	}
 	return version, true
 }
 
-func writeStoreErr(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		http.Error(w, "not found", http.StatusNotFound)
-	case errors.Is(err, store.ErrForbidden):
-		http.Error(w, "forbidden", http.StatusForbidden)
-	case errors.Is(err, store.ErrInvalidInput):
-		http.Error(w, err.Error(), http.StatusBadRequest)
-	default:
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
+// writeStoreErr is the thin shim that funnels store sentinels through
+// httpx.From, so every handler stays on the typed-envelope path even when
+// it doesn't know the specific failure mode up-front.
+func writeStoreErr(w http.ResponseWriter, r *http.Request, err error) {
+	httpx.WriteError(w, r, httpx.From(err))
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

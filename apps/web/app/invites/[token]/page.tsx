@@ -4,6 +4,7 @@ import { use, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "../../lib/api";
 import { fetchMe, loginURL } from "../../lib/auth";
+import { notifyError } from "../../lib/errors";
 
 type ClaimState = "checking" | "claiming" | "claimed" | "error";
 
@@ -27,8 +28,10 @@ export default function InviteClaimPage({ params }: { params: Promise<{ token: s
         if (!alive) return;
         setState("claimed");
         router.replace(`/d/${res.document.id}`);
-      } catch {
-        if (alive) setState("error");
+      } catch (err) {
+        if (!alive) return;
+        notifyError(err, "claim-invite");
+        setState("error");
       }
     })();
     return () => {

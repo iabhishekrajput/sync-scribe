@@ -39,4 +39,13 @@ func FromContext(ctx context.Context) *Principal {
 	return p
 }
 
-var ErrUnauthenticated = errors.New("unauthenticated")
+// Sentinels distinguish auth failures so callers (notably the HTTP middleware)
+// can choose a specific user-facing message — "your session expired" vs
+// "sign in to continue" — without parsing strings. The umbrella
+// ErrUnauthenticated stays for code paths that don't need the distinction.
+var (
+	ErrUnauthenticated = errors.New("unauthenticated")
+	ErrTokenMissing    = errors.New("auth: token missing")
+	ErrTokenInvalid    = errors.New("auth: token invalid")
+	ErrTokenExpired    = errors.New("auth: token expired")
+)

@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/abhishek/sync-scribe/api/internal/auth"
+	"github.com/abhishek/sync-scribe/api/internal/httpx"
 	"github.com/abhishek/sync-scribe/api/internal/store"
 )
 
@@ -25,7 +26,7 @@ func (s *Server) listShareLinks(w http.ResponseWriter, r *http.Request) {
 	}
 	links, err := s.store.ListShareLinks(r.Context(), id, p.Subject)
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, links)
@@ -39,7 +40,7 @@ func (s *Server) createShareLink(w http.ResponseWriter, r *http.Request) {
 	}
 	var in createShareLinkInput
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		http.Error(w, "bad body", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Could not parse the request body.", err))
 		return
 	}
 	in.Role = strings.TrimSpace(in.Role)
@@ -55,7 +56,7 @@ func (s *Server) createShareLink(w http.ResponseWriter, r *http.Request) {
 
 	link, err := s.store.CreateShareLink(r.Context(), id, p.Subject, in.Role, expires)
 	if err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	_ = s.store.RecordActivity(r.Context(), id, p.Subject, "share_link.created", map[string]any{"role": link.Role, "expires_at": link.ExpiresAt})
@@ -70,11 +71,11 @@ func (s *Server) revokeShareLink(w http.ResponseWriter, r *http.Request) {
 	}
 	token := chi.URLParam(r, "token")
 	if token == "" {
-		http.Error(w, "missing token", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Share token is required.", nil))
 		return
 	}
 	if err := s.store.RevokeShareLink(r.Context(), id, p.Subject, token); err != nil {
-		writeStoreErr(w, err)
+		writeStoreErr(w, r, err)
 		return
 	}
 	_ = s.store.RecordActivity(r.Context(), id, p.Subject, "share_link.revoked", map[string]any{"token": token})
@@ -96,14 +97,14 @@ type publicShareInfoResponse struct {
 func (s *Server) publicShareInfo(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
 	if token == "" {
-		http.Error(w, "missing token", http.StatusBadRequest)
+		httpx.WriteError(w, r, httpx.BadRequest("Share token is required.", nil))
 		return
 	}
 	link, doc, err := s.store.LookupShareLink(r.Context(), token)
 	if err != nil {
 		// Don't distinguish revoked/expired/missing — minimizes the oracle
 		// surface for token-guessing attacks.
-		writeStoreErr(w, store.ErrNotFound)
+		writeStoreErr(w, r, store.ErrNotFound)
 		return
 	}
 	out := publicShareInfoResponse{
