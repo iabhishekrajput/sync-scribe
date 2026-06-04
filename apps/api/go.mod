@@ -13,7 +13,7 @@ require (
 	github.com/prometheus/client_golang v1.20.5
 	github.com/redis/go-redis/v9 v9.20.0
 	github.com/rs/zerolog v1.33.0
-	golang.org/x/oauth2 v0.21.0
+	golang.org/x/oauth2 v0.36.0
 )
 
 require (
