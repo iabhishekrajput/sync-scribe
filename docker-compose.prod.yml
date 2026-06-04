@@ -1,0 +1,67 @@
+services:
+  app:
+    image: ghcr.io/iabhishekrajput/sync-scribe-app:latest
+    restart: unless-stopped
+    networks:
+      - scribe_net
+    environment:
+      NODE_ENV: "production"
+      HOSTNAME: "0.0.0.0"
+      PORT: "3000"
+      NEXT_TELEMETRY_DISABLED: "1"
+      TZ: "${TZ:-UTC}"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  api:
+    image: ghcr.io/iabhishekrajput/sync-scribe-service:latest
+    restart: unless-stopped
+    networks:
+      - scribe_net
+      - data_network
+    environment:
+      API_PORT: "8080"
+      API_BASE_URL: "https://scribe-service.anekdote.in"
+      FRONTEND_BASE_URL: "https://scribe.anekdote.in"
+
+      DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+      REDIS_URL: "redis://valkey:6379/0"
+
+      OIDC_ISSUER_URL: "${OIDC_ISSUER_URL}"
+      OIDC_CLIENT_ID: "${OIDC_CLIENT_ID}"
+      OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET}"
+      OIDC_REDIRECT_URL: "https://scribe-service.anekdote.in/auth/callback"
+      OIDC_TOKEN_AUDIENCE: "${OIDC_TOKEN_AUDIENCE:-}"
+
+      COOKIE_SECRET: "${COOKIE_SECRET}"
+      COOKIE_SECURE: "true"
+
+      SMTP_HOST: "${SMTP_HOST:-}"
+      SMTP_PORT: "${SMTP_PORT:-587}"
+      SMTP_FROM: "${SMTP_FROM:-noreply@anekdote.in}"
+      SMTP_USERNAME: "${SMTP_USERNAME:-}"
+      SMTP_PASSWORD: "${SMTP_PASSWORD:-}"
+
+      ADMIN_SECRET: "${ADMIN_SECRET:-}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      TZ: "${TZ:-UTC}"
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    networks:
+      - scribe_net
+    command: ["tunnel", "--no-autoupdate", "run", "--token", "${CLOUDFLARED_TUNNEL_TOKEN}"]
+    depends_on:
+      - app
+      - api
+
+networks:
+  scribe_net:
+    driver: bridge
+  data_network:
+    external: true

@@ -21,5 +21,9 @@ func (s *Server) sendInviteEmail(invite *store.Invite) error {
 		body,
 	}, "\r\n")
 	addr := s.cfg.SMTPHost + ":" + s.cfg.SMTPPort
-	return smtp.SendMail(addr, nil, s.cfg.SMTPFrom, []string{invite.Email}, []byte(msg))
+	var auth smtp.Auth
+	if s.cfg.SMTPUsername != "" {
+		auth = smtp.PlainAuth("", s.cfg.SMTPUsername, s.cfg.SMTPPassword, s.cfg.SMTPHost)
+	}
+	return smtp.SendMail(addr, auth, s.cfg.SMTPFrom, []string{invite.Email}, []byte(msg))
 }

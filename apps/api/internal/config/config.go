@@ -25,9 +25,11 @@ type Config struct {
 	CookieSecret []byte
 	CookieSecure bool
 
-	SMTPHost string
-	SMTPPort string
-	SMTPFrom string
+	SMTPHost     string
+	SMTPPort     string
+	SMTPFrom     string
+	SMTPUsername string
+	SMTPPassword string
 
 	// AdminSecret gates the /admin/* endpoints. Empty = no auth (dev only).
 	AdminSecret string
@@ -51,6 +53,8 @@ func Load() (*Config, error) {
 		SMTPHost:         envOr("SMTP_HOST", "localhost"),
 		SMTPPort:         envOr("SMTP_PORT", "1026"),
 		SMTPFrom:         envOr("SMTP_FROM", "noreply@syncscribe.local"),
+		SMTPUsername:     os.Getenv("SMTP_USERNAME"),
+		SMTPPassword:     os.Getenv("SMTP_PASSWORD"),
 		AdminSecret:      os.Getenv("ADMIN_SECRET"),
 		LogLevel:         parseLevel(envOr("LOG_LEVEL", "info")),
 	}

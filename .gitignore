@@ -15,7 +15,9 @@ apps/api/bin/
 .env
 .env.local
 .env.*.local
+.env.prod
 !.env.example
+!.env.prod.example
 
 # OS
 .DS_Store
