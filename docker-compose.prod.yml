@@ -29,7 +29,7 @@ services:
       FRONTEND_BASE_URL: "https://scribe.anekdote.in"
 
       DATABASE_URL: "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
-      REDIS_URL: "redis://valkey:6379/0"
+      REDIS_URL: "redis://valkey:6379/1"
 
       OIDC_ISSUER_URL: "${OIDC_ISSUER_URL}"
       OIDC_CLIENT_ID: "${OIDC_CLIENT_ID}"

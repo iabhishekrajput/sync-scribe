@@ -278,6 +278,8 @@ export const api = {
     if (!res.ok) throw await parseApiError(res);
     return res.json();
   },
+  shareAssetURL: (token: string, assetID: string) =>
+    `${API}/share/${encodeURIComponent(token)}/assets/${assetID}`,
 
   listComments: (id: string, includeResolved = false) =>
     request<DocumentComment[]>("GET", `/api/documents/${id}/comments${includeResolved ? "?include_resolved=true" : ""}`),

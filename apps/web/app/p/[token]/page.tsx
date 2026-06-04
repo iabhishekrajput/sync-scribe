@@ -1,11 +1,13 @@
 "use client";
 
-import { use, useEffect, useRef, useState } from "react";
+import { use, useEffect, useMemo, useRef, useState } from "react";
+import type { Components } from "react-markdown";
 import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness";
 import { Group as PanelGroup, Panel, Separator as PanelResizeHandle } from "react-resizable-panels";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { markdownComponents, rehypeSourceTextSpans, useDarkClass } from "../../lib/markdown";
 import { toast } from "sonner";
 import { api, type PublicShareInfo } from "../../lib/api";
 import { ApiError, notifyError } from "../../lib/errors";
@@ -109,6 +111,19 @@ export default function PublicSharePage({ params }: { params: Promise<{ token: s
 
   const isViewer = info?.role === "viewer";
 
+  const docId = info?.document_id;
+  const mdComponents = useMemo<Components>(
+    () => ({
+      ...markdownComponents,
+      img: ({ src, alt, ...rest }) => {
+        const rewritten = rewriteShareAssetURL(typeof src === "string" ? src : undefined, token, docId);
+        // eslint-disable-next-line @next/next/no-img-element
+        return <img src={rewritten} alt={alt ?? ""} {...rest} />;
+      },
+    }),
+    [token, docId],
+  );
+
   if (loadError) {
     return (
       <main className="flex min-h-screen flex-col items-center justify-center gap-3 p-8 text-center">
@@ -159,7 +174,12 @@ export default function PublicSharePage({ params }: { params: Promise<{ token: s
         <PanelResizeHandle className="w-1 bg-current/10 transition-colors hover:bg-current/20" />
         <Panel defaultSize={40} minSize={15}>
           <div className="md-preview h-full overflow-auto p-6">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            <ReactMarkdown
+              components={mdComponents}
+              remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeSourceTextSpans]}
+              skipHtml
+            >
               {previewText || "_(empty document)_"}
             </ReactMarkdown>
           </div>
@@ -174,6 +194,17 @@ export default function PublicSharePage({ params }: { params: Promise<{ token: s
       </footer>
     </div>
   );
+}
+
+// Rewrites the authed asset URL stored in markdown to the share-token route,
+// which guests can hit without a Bearer header. External URLs pass through.
+// If the URL targets a different doc than this share, the original src is kept
+// so the browser surfaces it as a broken image rather than silently bridging.
+function rewriteShareAssetURL(src: string | undefined, token: string, docId: string | undefined) {
+  if (!src || !docId) return src;
+  const match = src.match(/\/api\/documents\/([^/]+)\/assets\/([^/?#]+)/);
+  if (!match || match[1] !== docId) return src;
+  return api.shareAssetURL(token, match[2]);
 }
 
 function ConnPill({ state }: { state: ConnectionState }) {
@@ -198,16 +229,3 @@ function ServerSavePill({ state }: { state: SaveState }) {
   return <span className={`hidden text-xs sm:inline ${s.className}`}>{s.text}</span>;
 }
 
-function useDarkClass() {
-  const [dark, setDark] = useState(() =>
-    typeof document !== "undefined" && document.documentElement.classList.contains("dark"),
-  );
-  useEffect(() => {
-    const obs = new MutationObserver(() => {
-      setDark(document.documentElement.classList.contains("dark"));
-    });
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    return () => obs.disconnect();
-  }, []);
-  return dark;
-}

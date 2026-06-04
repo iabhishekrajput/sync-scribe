@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 
 	"github.com/abhishek/sync-scribe/api/internal/auth"
 	"github.com/abhishek/sync-scribe/api/internal/httpx"
@@ -117,4 +118,34 @@ func (s *Server) publicShareInfo(w http.ResponseWriter, r *http.Request) {
 		out.ExpiresAt = link.ExpiresAt.UTC().Format(time.RFC3339)
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// getShareAsset serves an asset to anyone holding a live share token. The
+// token gates access; the asset is scoped to the document the link points at,
+// so a leaked asset ID alone is useless without a matching token.
+func (s *Server) getShareAsset(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+	if token == "" {
+		httpx.WriteError(w, r, httpx.BadRequest("Share token is required.", nil))
+		return
+	}
+	assetID, err := uuid.Parse(chi.URLParam(r, "assetID"))
+	if err != nil {
+		httpx.WriteError(w, r, httpx.BadRequest("Asset id is not a valid UUID.", err))
+		return
+	}
+
+	_, doc, err := s.store.LookupShareLink(r.Context(), token)
+	if err != nil {
+		writeStoreErr(w, r, store.ErrNotFound)
+		return
+	}
+
+	blob, err := s.store.GetAsset(r.Context(), doc.ID, assetID)
+	if err != nil {
+		writeStoreErr(w, r, err)
+		return
+	}
+
+	writeAssetBlob(w, blob, "no-store")
 }

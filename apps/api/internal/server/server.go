@@ -73,6 +73,7 @@ func (s *Server) Routes() http.Handler {
 
 	// Public share-link metadata (no auth — only the token is the secret).
 	r.Get("/share/{token}", s.publicShareInfo)
+	r.Get("/share/{token}/assets/{assetID}", s.getShareAsset)
 
 	r.Route("/auth", func(r chi.Router) {
 		r.Get("/login", s.auth.Login)

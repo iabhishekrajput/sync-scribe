@@ -158,9 +158,13 @@ func (s *Server) getAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	writeAssetBlob(w, blob, "private, max-age=31536000, immutable")
+}
+
+func writeAssetBlob(w http.ResponseWriter, blob *store.AssetBlob, cacheControl string) {
 	w.Header().Set("Content-Type", blob.ContentType)
 	w.Header().Set("Content-Disposition", "inline; filename=\""+strings.ReplaceAll(blob.Filename, "\"", "")+"\"")
-	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	w.Header().Set("Cache-Control", cacheControl)
 	w.Header().Set("Last-Modified", blob.CreatedAt.UTC().Format(time.RFC1123))
 	_, _ = w.Write(blob.Data)
 }
