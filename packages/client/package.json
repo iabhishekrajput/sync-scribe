@@ -15,10 +15,10 @@
   },
   "dependencies": {
     "@syncscribe/proto": "workspace:*",
-    "y-protocols": "^1.0.6",
-    "yjs": "^13.6.20"
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.31"
   },
   "devDependencies": {
-    "typescript": "^5.7.2"
+    "typescript": "^6.0.3"
   }
 }
