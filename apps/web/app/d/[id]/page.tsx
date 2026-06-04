@@ -1,6 +1,6 @@
 "use client";
 
-import React, { isValidElement, type ReactNode, useEffect, useId, useMemo, useRef, useState, use } from "react";
+import React, { isValidElement, type ReactNode, useEffect, useEffectEvent, useId, useMemo, useRef, useState, use } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import * as Y from "yjs";
@@ -276,7 +276,6 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const [loadError, setLoadError] = useState("");
   const [connState, setConnState] = useState<ConnectionState>("connecting");
   const [serverSaveState, setServerSaveState] = useState<SaveState>("saving");
-  const [previewText, setPreviewText] = useState("");
   const [shareOpen, setShareOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exportStatus, setExportStatus] = useState<ExportStatus>({ state: "loading" });
@@ -311,18 +310,42 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const [publishState, setPublishState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [mobileTab, setMobileTab] = useState<"editor" | "preview">("editor");
   const isOwner = !!me && me.id === ownerID;
+  const [{ ydoc, awareness }] = useState(() => {
+    const doc = new Y.Doc();
+    return { ydoc: doc, awareness: new Awareness(doc) };
+  });
+  const ytext = ydoc.getText("content");
+
+  async function refreshAccessList() {
+    if (!isOwner) return;
+    setAccessLoading(true);
+    try {
+      const access = await api.listAccess(id);
+      setAccessList(access);
+      setPendingInvites(await api.listInvites(id));
+    } catch (err) {
+      notifyError(err, "list-access");
+    } finally {
+      setAccessLoading(false);
+    }
+  }
+
+  const refreshAccessListOnOpen = useEffectEvent(() => {
+    void refreshAccessList();
+  });
 
   useEffect(() => {
     if (!shareOpen || !isOwner) return;
-    void refreshAccessList();
-  }, [shareOpen, isOwner]);
+    const timer = window.setTimeout(() => {
+      refreshAccessListOnOpen();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [isOwner, shareOpen]);
 
   const [aboveCursors, setAboveCursors] = useState<PresencePeer[]>([]);
   const [belowCursors, setBelowCursors] = useState<PresencePeer[]>([]);
   const [editorReady, setEditorReady] = useState(false);
 
-  const ydocRef = useRef<Y.Doc | null>(null);
-  const awarenessRef = useRef<Awareness | null>(null);
   const providerRef = useRef<SyncProvider | null>(null);
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const monacoRef = useRef<typeof Monaco | null>(null);
@@ -336,16 +359,6 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const insertImageInputRef = useRef<HTMLInputElement | null>(null);
   const insertImageOffsetRef = useRef<number | null>(null);
   const isDark = useDarkClass();
-
-  // Construct Y.Doc + awareness lazily so they survive across renders but
-  // get torn down on unmount.
-  if (!ydocRef.current) {
-    ydocRef.current = new Y.Doc();
-    awarenessRef.current = new Awareness(ydocRef.current);
-  }
-  const ydoc = ydocRef.current;
-  const awareness = awarenessRef.current!;
-  const ytext = useMemo(() => ydoc.getText("content"), [ydoc]);
 
   // Initial fetch: doc metadata + start the WS provider.
   useEffect(() => {
@@ -419,12 +432,12 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   }, [id]);
 
   // Mirror Y.Text into a React state so the preview re-renders on edits.
+  const [previewText, setPreviewText] = useState(() => ytext.toString());
   useEffect(() => {
     const observer = () => setPreviewText(ytext.toString());
     ytext.observe(observer);
-    setPreviewText(ytext.toString());
     return () => ytext.unobserve(observer);
-  }, [ytext]);
+  }, [setPreviewText, ytext]);
 
   // M9: bump awareness.user.typingAt on local edits so peers see a typing
   // pill. Throttled inside makeTypingStamper to ~one awareness frame per
@@ -570,20 +583,6 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     }
   }
 
-  async function refreshAccessList() {
-    if (!isOwner) return;
-    setAccessLoading(true);
-    try {
-      const access = await api.listAccess(id);
-      setAccessList(access);
-      setPendingInvites(await api.listInvites(id));
-    } catch (err) {
-      notifyError(err, "list-access");
-    } finally {
-      setAccessLoading(false);
-    }
-  }
-
   async function revokeInvite(token: string) {
     try {
       await api.revokeInvite(id, token);
@@ -701,11 +700,15 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     scrollPreviewToLine(previewScrollRef.current, anchor.line);
   }
 
+  const clearSelectedCommentOnOutsideClick = useEffectEvent(() => {
+    selectComment(null);
+  });
+
   const selectedCommentAnchor = useMemo(() => {
     if (!selectedCommentId) return null;
     const comment = comments.find((item) => item.id === selectedCommentId);
     return comment ? resolveCommentAnchor(comment, ydoc, ytext) : null;
-  }, [comments, previewText, selectedCommentId, ydoc, ytext]);
+  }, [comments, selectedCommentId, ydoc, ytext]);
 
   useEffect(() => {
     const preview = previewScrollRef.current;
@@ -779,7 +782,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
       const target = event.target as Node | null;
       if (!target) return;
       if (commentsPanelRef.current?.contains(target)) return;
-      selectComment(null);
+      clearSelectedCommentOnOutsideClick();
     };
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
@@ -2363,13 +2366,12 @@ function publishIconClass(state: "idle" | "saving" | "saved" | "error") {
 }
 
 function useDarkClass() {
-  const [dark, setDark] = useState(false);
+  const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
   useEffect(() => {
     const obs = new MutationObserver(() => {
       setDark(document.documentElement.classList.contains("dark"));
     });
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    setDark(document.documentElement.classList.contains("dark"));
     return () => obs.disconnect();
   }, []);
   return dark;
@@ -2625,25 +2627,21 @@ function replaceEditorText(
 // fetch the asset, convert to a blob URL, and swap it in. Non-asset URLs
 // (external images) pass through unchanged.
 function AuthedImg({ docId, src, alt, ...rest }: { docId: string; src?: string; alt?: string } & React.ImgHTMLAttributes<HTMLImageElement>) {
-  const [resolved, setResolved] = useState<string | undefined>(undefined);
-  const [failed, setFailed] = useState(false);
+  const [asset, setAsset] = useState<{ src: string; resolved?: string; failed: boolean }>({
+    src: "",
+    resolved: undefined,
+    failed: false,
+  });
+  const assetMatch = src?.match(/\/api\/documents\/([^/]+)\/assets\/([^/?#]+)/);
+  const shouldFetch = !!assetMatch && assetMatch[1] === docId;
+  const resolved = shouldFetch ? (asset.src === src ? asset.resolved : undefined) : src;
+  const failed = shouldFetch ? asset.src === src && asset.failed : false;
 
   useEffect(() => {
+    if (!src || !assetMatch || !shouldFetch) return;
     let alive = true;
     let blob: string | null = null;
-    setResolved(undefined);
-    setFailed(false);
-    if (!src) return;
-    const assetMatch = src.match(/\/api\/documents\/([^/]+)\/assets\/([^/?#]+)/);
-    if (!assetMatch) {
-      setResolved(src);
-      return;
-    }
-    const [, urlDocId, assetId] = assetMatch;
-    if (urlDocId !== docId) {
-      setResolved(src);
-      return;
-    }
+    const [, , assetId] = assetMatch;
     (async () => {
       try {
         const u = await api.fetchAssetBlobURL(docId, assetId);
@@ -2652,16 +2650,16 @@ function AuthedImg({ docId, src, alt, ...rest }: { docId: string; src?: string; 
           return;
         }
         blob = u;
-        setResolved(u);
+        setAsset({ src, resolved: u, failed: false });
       } catch {
-        if (alive) setFailed(true);
+        if (alive) setAsset({ src, resolved: undefined, failed: true });
       }
     })();
     return () => {
       alive = false;
       if (blob) URL.revokeObjectURL(blob);
     };
-  }, [docId, src]);
+  }, [assetMatch, docId, shouldFetch, src]);
 
   if (failed) return <span className="text-xs opacity-60">[image failed to load]</span>;
   if (!resolved) return <span className="text-xs opacity-60">Loading image…</span>;
@@ -2703,13 +2701,17 @@ function isMermaidCodeChild(children: ReactNode) {
 function MermaidDiagram({ source }: { source: string }) {
   const id = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const isDark = useDarkClass();
-  const [svg, setSvg] = useState("");
-  const [failed, setFailed] = useState(false);
+  const renderKey = `${isDark ? "dark" : "light"}\n${source}`;
+  const [rendered, setRendered] = useState<{ key: string; svg: string; failed: boolean }>({
+    key: "",
+    svg: "",
+    failed: false,
+  });
+  const svg = rendered.key === renderKey ? rendered.svg : "";
+  const failed = rendered.key === renderKey && rendered.failed;
 
   useEffect(() => {
     let alive = true;
-    setSvg("");
-    setFailed(false);
 
     (async () => {
       try {
@@ -2731,16 +2733,16 @@ function MermaidDiagram({ source }: { source: string }) {
             : undefined,
         });
         const result = await mermaid.render(`mermaid-${id}`, source);
-        if (alive) setSvg(result.svg);
+        if (alive) setRendered({ key: renderKey, svg: result.svg, failed: false });
       } catch {
-        if (alive) setFailed(true);
+        if (alive) setRendered({ key: renderKey, svg: "", failed: true });
       }
     })();
 
     return () => {
       alive = false;
     };
-  }, [id, isDark, source]);
+  }, [id, isDark, renderKey, source]);
 
   if (failed) {
     return <pre className="mermaid-fallback"><code>{source}</code></pre>;

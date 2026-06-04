@@ -24,18 +24,14 @@ function publicURL(token: string): string {
 // Share-link create/list/revoke is owner-only on the server. Render nothing
 // for non-owners so we don't surface a misleading 403 in the UI.
 export function ShareLinksPanel({ docId, isOwner }: { docId: string; isOwner: boolean }) {
-  const [links, setLinks] = useState<ShareLink[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [links, setLinks] = useState<ShareLink[] | null>(isOwner ? null : []);
   const [creating, setCreating] = useState(false);
   const [role, setRole] = useState<Role>("viewer");
   const [expiration, setExpiration] = useState<ExpirationOption>("week");
   const [copied, setCopied] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!isOwner) {
-      setLoading(false);
-      return;
-    }
+    if (!isOwner) return;
     let alive = true;
     (async () => {
       try {
@@ -43,8 +39,6 @@ export function ShareLinksPanel({ docId, isOwner }: { docId: string; isOwner: bo
         if (alive) setLinks(ls);
       } catch (err) {
         if (alive) notifyError(err, "list-share-links");
-      } finally {
-        if (alive) setLoading(false);
       }
     })();
     return () => {
@@ -53,13 +47,15 @@ export function ShareLinksPanel({ docId, isOwner }: { docId: string; isOwner: bo
   }, [docId, isOwner]);
 
   if (!isOwner) return null;
+  const loading = links === null;
+  const items = links ?? [];
 
   async function onCreate() {
     setCreating(true);
     try {
       const expiresInMs = expirationOptions.find((option) => option.value === expiration)?.ms;
       const link = await api.createShareLink(docId, role, expiresInMs);
-      setLinks((prev) => [link, ...prev]);
+      setLinks((prev) => [link, ...(prev ?? [])]);
     } catch (err) {
       notifyError(err, "create-share-link");
     } finally {
@@ -68,12 +64,12 @@ export function ShareLinksPanel({ docId, isOwner }: { docId: string; isOwner: bo
   }
 
   async function onRevoke(token: string) {
-    const link = links.find((l) => l.token === token);
+    const link = items.find((l) => l.token === token);
     const access = link?.role === "editor" ? "edit" : "view";
     if (!confirm(`Revoke this ${access} link? Anyone using it will lose access immediately.`)) return;
     try {
       await api.revokeShareLink(docId, token);
-      setLinks((prev) => prev.filter((l) => l.token !== token));
+      setLinks((prev) => (prev ?? []).filter((l) => l.token !== token));
     } catch (err) {
       notifyError(err, "revoke-share-link");
     }
@@ -99,7 +95,7 @@ export function ShareLinksPanel({ docId, isOwner }: { docId: string; isOwner: bo
           <p className="mt-1 text-xs opacity-60">Public links do not require sign-in. Expiring viewer links are the safer default.</p>
         </div>
         <span className="rounded-full bg-current/10 px-2 py-0.5 text-[10px] uppercase tracking-wide">
-          {links.length} active
+          {items.length} active
         </span>
       </div>
 
@@ -148,11 +144,11 @@ export function ShareLinksPanel({ docId, isOwner }: { docId: string; isOwner: bo
 
       {loading ? (
         <p className="text-xs opacity-60">Loading…</p>
-      ) : links.length === 0 ? (
+      ) : items.length === 0 ? (
         <p className="text-xs opacity-60">No active links.</p>
       ) : (
         <ul className="space-y-2">
-          {links.map((l) => (
+          {items.map((l) => (
             <li
               key={l.token}
               className="flex items-center gap-2 rounded-md border border-current/10 px-2 py-1.5 text-xs"

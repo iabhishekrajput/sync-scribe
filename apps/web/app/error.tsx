@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect } from "react";
 import { notifyError } from "./lib/errors";
 
@@ -28,9 +29,9 @@ export default function RouteError({
           >
             Try again
           </button>
-          <a href="/" className="rounded-md border border-current/15 px-4 py-2 text-sm hover:bg-current/5">
+          <Link href="/" className="rounded-md border border-current/15 px-4 py-2 text-sm hover:bg-current/5">
             Dashboard
-          </a>
+          </Link>
         </div>
       </div>
     </main>

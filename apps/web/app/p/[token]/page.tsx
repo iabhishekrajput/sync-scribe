@@ -1,6 +1,6 @@
 "use client";
 
-import { use, useEffect, useMemo, useRef, useState } from "react";
+import { use, useEffect, useRef, useState } from "react";
 import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness";
 import { PanelGroup, Panel, PanelResizeHandle } from "react-resizable-panels";
@@ -42,20 +42,14 @@ export default function PublicSharePage({ params }: { params: Promise<{ token: s
   const [loadError, setLoadError] = useState("");
   const [connState, setConnState] = useState<ConnectionState>("connecting");
   const [serverSaveState, setServerSaveState] = useState<SaveState>("saving");
-  const [previewText, setPreviewText] = useState("");
-
-  const ydocRef = useRef<Y.Doc | null>(null);
-  const awarenessRef = useRef<Awareness | null>(null);
+  const [{ ydoc, awareness }] = useState(() => {
+    const doc = new Y.Doc();
+    return { ydoc: doc, awareness: new Awareness(doc) };
+  });
+  const [previewText, setPreviewText] = useState(() => ydoc.getText("content").toString());
   const providerRef = useRef<SyncProvider | null>(null);
   const isDark = useDarkClass();
-
-  if (!ydocRef.current) {
-    ydocRef.current = new Y.Doc();
-    awarenessRef.current = new Awareness(ydocRef.current);
-  }
-  const ydoc = ydocRef.current;
-  const awareness = awarenessRef.current!;
-  const ytext = useMemo(() => ydoc.getText("content"), [ydoc]);
+  const ytext = ydoc.getText("content");
 
   useEffect(() => {
     let alive = true;
@@ -110,7 +104,6 @@ export default function PublicSharePage({ params }: { params: Promise<{ token: s
   useEffect(() => {
     const observer = () => setPreviewText(ytext.toString());
     ytext.observe(observer);
-    setPreviewText(ytext.toString());
     return () => ytext.unobserve(observer);
   }, [ytext]);
 
@@ -206,13 +199,12 @@ function ServerSavePill({ state }: { state: SaveState }) {
 }
 
 function useDarkClass() {
-  const [dark, setDark] = useState(false);
+  const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
   useEffect(() => {
     const obs = new MutationObserver(() => {
       setDark(document.documentElement.classList.contains("dark"));
     });
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    setDark(document.documentElement.classList.contains("dark"));
     return () => obs.disconnect();
   }, []);
   return dark;

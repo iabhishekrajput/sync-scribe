@@ -12,8 +12,11 @@ package httpx
 //   code          httpx.Code on the response envelope (stamped by WriteError)
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"time"
@@ -79,6 +82,32 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	n, err := s.ResponseWriter.Write(b)
 	s.bytes += n
 	return n, err
+}
+
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := s.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("httpx: response writer does not implement http.Hijacker")
+	}
+	return h.Hijack()
+}
+
+func (s *statusRecorder) Push(target string, opts *http.PushOptions) error {
+	p, ok := s.ResponseWriter.(http.Pusher)
+	if !ok {
+		return http.ErrNotSupported
+	}
+	return p.Push(target, opts)
+}
+
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
 }
 
 // AccessLog emits exactly one structured log line per request, after the

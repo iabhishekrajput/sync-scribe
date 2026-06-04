@@ -12,19 +12,17 @@ const TITLE: Record<Theme, string> = {
 };
 
 export function ThemeToggle() {
-  const [theme, setLocal] = useState<Theme>("system");
+  const [theme, setLocal] = useState<Theme>(() => getStoredTheme());
 
   useEffect(() => {
-    const t = getStoredTheme();
-    setLocal(t);
-    applyTheme(t);
-    if (t === "system") {
+    applyTheme(theme);
+    if (theme === "system") {
       const mq = window.matchMedia("(prefers-color-scheme: dark)");
       const handler = () => applyTheme("system");
       mq.addEventListener("change", handler);
       return () => mq.removeEventListener("change", handler);
     }
-  }, []);
+  }, [theme]);
 
   const Icon = theme === "system" ? MonitorIcon : theme === "light" ? SunIcon : MoonIcon;
 

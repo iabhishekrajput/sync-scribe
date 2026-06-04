@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { loginURL } from "../lib/auth";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -9,9 +10,9 @@ export function SignInScreen({ returnTo = "/" }: { returnTo?: string }) {
   return (
     <main className="min-h-screen bg-white text-neutral-950 dark:bg-neutral-950 dark:text-neutral-50">
       <header className="flex h-14 items-center justify-between border-b border-current/10 px-4 sm:px-6">
-        <a href="/" className="text-sm font-semibold tracking-tight">
+        <Link href="/" className="text-sm font-semibold tracking-tight">
           SyncScribe
-        </a>
+        </Link>
         <ThemeToggle />
       </header>
 

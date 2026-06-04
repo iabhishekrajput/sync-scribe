@@ -1,10 +1,12 @@
 package httpx
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -115,16 +117,11 @@ func TestRequestLoggerAttachesIDAndAccessLogEmitsOneLine(t *testing.T) {
 		},
 	))))
 
-	srv := httptest.NewServer(stack)
-	defer srv.Close()
-
-	resp, err := http.Get(srv.URL + "/probe")
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusTeapot {
-		t.Fatalf("status = %d", resp.StatusCode)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/probe", nil)
+	stack.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTeapot {
+		t.Fatalf("status = %d", rec.Code)
 	}
 
 	out := buf.String()
@@ -158,24 +155,19 @@ func TestRecovererReturnsEnvelope(t *testing.T) {
 		},
 	))))
 
-	srv := httptest.NewServer(stack)
-	defer srv.Close()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	stack.ServeHTTP(rec, req)
 
-	resp, err := http.Get(srv.URL + "/")
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
 	}
 	var body struct {
 		Error struct {
 			Code string `json:"code"`
 		} `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if body.Error.Code != "internal" {
@@ -191,9 +183,43 @@ func TestRecovererReturnsEnvelope(t *testing.T) {
 	}
 }
 
+func TestAccessLogPreservesHijacker(t *testing.T) {
+	base := &hijackRecorder{ResponseWriter: httptest.NewRecorder()}
+	var hijacked bool
+	base.hijack = func() (net.Conn, *bufio.ReadWriter, error) {
+		hijacked = true
+		return nil, nil, nil
+	}
+
+	handler := AccessLog(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("wrapped response writer lost http.Hijacker")
+		}
+		if _, _, err := h.Hijack(); err != nil {
+			t.Fatalf("Hijack() error = %v", err)
+		}
+	}))
+
+	handler.ServeHTTP(base, httptest.NewRequest(http.MethodGet, "/ws", nil))
+
+	if !hijacked {
+		t.Fatal("expected wrapped Hijack to delegate to the underlying writer")
+	}
+}
+
 func wrap(err error) error { return errWrap{inner: err} }
 
 type errWrap struct{ inner error }
 
 func (e errWrap) Error() string { return "wrapped: " + e.inner.Error() }
 func (e errWrap) Unwrap() error { return e.inner }
+
+type hijackRecorder struct {
+	http.ResponseWriter
+	hijack func() (net.Conn, *bufio.ReadWriter, error)
+}
+
+func (h *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return h.hijack()
+}

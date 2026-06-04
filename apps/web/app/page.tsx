@@ -13,17 +13,25 @@ type DocumentTab = "all" | "owned" | "shared";
 
 export default function Dashboard() {
   const router = useRouter();
+  const [showOnboarding, setShowOnboarding] = useState(() =>
+    typeof window !== "undefined" && localStorage.getItem("syncscribe.onboarding.dismissed") !== "true",
+  );
   const [me, setMe] = useState<Me | null>(null);
-  const [docs, setDocs] = useState<Document[]>([]);
+  const [docsState, setDocsState] = useState<{ key: string; docs: Document[]; failed: boolean }>({
+    key: "",
+    docs: [],
+    failed: false,
+  });
   const [loading, setLoading] = useState(true);
-  const [docsLoading, setDocsLoading] = useState(false);
-  const [loadFailed, setLoadFailed] = useState(false);
   const [creating, setCreating] = useState(false);
   const [tab, setTab] = useState<DocumentTab>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
-  const [showOnboarding, setShowOnboarding] = useState(false);
   const [openMenuID, setOpenMenuID] = useState<string | null>(null);
+  const docsKey = `${tab}\n${debouncedSearchQuery}`;
+  const docs = docsState.key === docsKey ? docsState.docs : [];
+  const docsLoading = !!me && docsState.key !== docsKey;
+  const loadFailed = docsState.key === docsKey && docsState.failed;
 
   useEffect(() => {
     let alive = true;
@@ -46,30 +54,30 @@ export default function Dashboard() {
   useEffect(() => {
     if (!me) return;
     let alive = true;
-    setDocsLoading(true);
-    setLoadFailed(false);
     api
       .listDocuments({ q: debouncedSearchQuery, scope: tab, limit: 50 })
       .then((list) => {
-        if (alive) setDocs(list);
+        if (alive) {
+          setDocsState({
+            key: docsKey,
+            docs: list,
+            failed: false,
+          });
+        }
       })
       .catch((err) => {
         if (!alive) return;
-        setLoadFailed(true);
+        setDocsState((prev) => ({
+          key: docsKey,
+          docs: prev.key === docsKey ? prev.docs : [],
+          failed: true,
+        }));
         notifyError(err, "load-documents");
-      })
-      .finally(() => {
-        if (alive) setDocsLoading(false);
       });
     return () => {
       alive = false;
     };
-  }, [me, tab, debouncedSearchQuery]);
-
-  useEffect(() => {
-    if (!me) return;
-    setShowOnboarding(localStorage.getItem("syncscribe.onboarding.dismissed") !== "true");
-  }, [me]);
+  }, [docsKey, me, tab, debouncedSearchQuery]);
 
   if (loading) {
     return (
@@ -125,7 +133,7 @@ export default function Dashboard() {
     if (!confirm("Delete this document?")) return;
     try {
       await api.deleteDocument(id);
-      setDocs((d) => d.filter((x) => x.id !== id));
+      setDocsState((prev) => ({ ...prev, docs: prev.docs.filter((x) => x.id !== id) }));
     } catch (err) {
       notifyError(err, "delete-document");
     } finally {
@@ -142,7 +150,10 @@ export default function Dashboard() {
     }
     try {
       const renamed = await api.renameDocument(doc.id, next);
-      setDocs((prev) => prev.map((item) => (item.id === renamed.id ? renamed : item)));
+      setDocsState((prev) => ({
+        ...prev,
+        docs: prev.docs.map((item) => (item.id === renamed.id ? renamed : item)),
+      }));
     } catch (err) {
       notifyError(err, "rename-document");
     } finally {
