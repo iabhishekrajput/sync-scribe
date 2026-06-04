@@ -2,7 +2,6 @@ name: Publish Images
 
 on:
   push:
-    branches: ["main"]
     tags: ["*"]
   workflow_dispatch:
 
@@ -42,9 +41,8 @@ jobs:
         with:
           images: ${{ env.IMAGE_WEB }}
           tags: |
-            type=ref,event=branch
             type=ref,event=tag
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
 
       - name: Build and push web image
         uses: docker/build-push-action@v6
@@ -88,9 +86,8 @@ jobs:
         with:
           images: ${{ env.IMAGE_API }}
           tags: |
-            type=ref,event=branch
             type=ref,event=tag
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
 
       - name: Build and push api image
         uses: docker/build-push-action@v6
