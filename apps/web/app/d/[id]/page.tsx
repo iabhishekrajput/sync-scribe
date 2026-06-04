@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness";
 import type * as Monaco from "monaco-editor";
-import { PanelGroup, Panel, PanelResizeHandle } from "react-resizable-panels";
+import { Group as PanelGroup, Panel, Separator as PanelResizeHandle } from "react-resizable-panels";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -1166,7 +1166,13 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
           collapsed={docsSidebarCollapsed}
           onCollapsedChange={setDocsSidebarCollapsed}
         />
-        <div className="relative flex min-w-0 flex-1 flex-col">
+        <div className="relative flex min-w-0 flex-1 flex-col" data-mobile-tab={mobileTab}>
+          <style>{`
+            @media (max-width: 639px) {
+              [data-mobile-tab="editor"] #d-preview-pane,
+              [data-mobile-tab="preview"] #d-editor-pane { display: none !important; }
+            }
+          `}</style>
           {/* Mobile-only tab switcher between editor and preview. */}
           <div className="no-print flex items-center justify-center gap-1 border-b border-current/10 bg-current/5 p-1 sm:hidden">
             {(["editor", "preview"] as const).map((t) => (
@@ -1184,9 +1190,10 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
             ))}
           </div>
 
-          <PanelGroup direction="horizontal" className="editor-panels flex-1">
+          <PanelGroup orientation="horizontal" className="editor-panels flex-1">
             <Panel
-              className={`no-print ${mobileTab === "editor" ? "" : "hidden sm:flex"}`}
+              id="d-editor-pane"
+              className="no-print"
               defaultSize={60}
               minSize={20}
             >
@@ -1280,7 +1287,8 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
               </span>
             </PanelResizeHandle>
             <Panel
-              className={`preview-pane ${mobileTab === "preview" ? "" : "hidden sm:flex"}`}
+              id="d-preview-pane"
+              className="preview-pane"
               defaultSize={40}
               minSize={15}
             >
@@ -2366,7 +2374,9 @@ function publishIconClass(state: "idle" | "saving" | "saved" | "error") {
 }
 
 function useDarkClass() {
-  const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
+  const [dark, setDark] = useState(() =>
+    typeof document !== "undefined" && document.documentElement.classList.contains("dark"),
+  );
   useEffect(() => {
     const obs = new MutationObserver(() => {
       setDark(document.documentElement.classList.contains("dark"));

@@ -3,7 +3,7 @@
 import { use, useEffect, useRef, useState } from "react";
 import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness";
-import { PanelGroup, Panel, PanelResizeHandle } from "react-resizable-panels";
+import { Group as PanelGroup, Panel, Separator as PanelResizeHandle } from "react-resizable-panels";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
@@ -143,7 +143,7 @@ export default function PublicSharePage({ params }: { params: Promise<{ token: s
         </div>
       </header>
 
-      <PanelGroup direction="horizontal" className="flex-1">
+      <PanelGroup orientation="horizontal" className="flex-1">
         <Panel defaultSize={60} minSize={20}>
           <div className="h-full">
             <YjsMonacoEditor
@@ -199,7 +199,9 @@ function ServerSavePill({ state }: { state: SaveState }) {
 }
 
 function useDarkClass() {
-  const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
+  const [dark, setDark] = useState(() =>
+    typeof document !== "undefined" && document.documentElement.classList.contains("dark"),
+  );
   useEffect(() => {
     const obs = new MutationObserver(() => {
       setDark(document.documentElement.classList.contains("dark"));
