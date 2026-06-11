@@ -17,7 +17,6 @@ import {
   MSG_AWARENESS,
   MSG_READONLY,
   MSG_SYNC,
-  SUBPROTOCOL_LEGACY,
   SUBPROTOCOL_YJS,
   SYNC_STEP_1,
   SYNC_STEP_2,
@@ -25,19 +24,6 @@ import {
 } from "@syncscribe/proto";
 import { getAccessToken } from "./auth";
 
-// Wire (mirrors apps/api/internal/sync/protocol.go):
-//   0x00 UPDATE         payload = Y.encodeStateAsUpdate-style bytes
-//   0x01 SYNC_COMPLETE  no payload — emitted by server after replay
-//   0x02 AWARENESS      payload = y-protocols/awareness encoded state (M4)
-//   0x03 PING           no payload
-//   0x04 READONLY       no payload — server rejected writes for this conn
-//   0x05 ACK            no payload — one per persisted local update; drives
-//                       the Saving/Saved indicator
-const TAG_UPDATE = 0x00;
-const TAG_SYNC_COMPLETE = 0x01;
-const TAG_AWARENESS = 0x02;
-const TAG_READONLY = 0x04;
-const TAG_ACK = 0x05;
 const UPDATE_DEBOUNCE_MS = 600;
 
 export type ConnectionState = "connecting" | "syncing" | "live" | "readonly" | "offline";
@@ -120,7 +106,6 @@ export class SyncProvider {
   private updateFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private synced = false;
   private readonly = false;
-  private protocol = SUBPROTOCOL_YJS;
 
   // Pending = local update batches we've shipped and not yet seen an ACK for.
   private pendingSaves = 0;
@@ -208,7 +193,7 @@ export class SyncProvider {
       // Public share-link path: no user session, the token in the URL is the
       // only credential. Anonymous read/edit per the link's role.
       url = `${WS_BASE}/api/sync/${this.opts.docId}?share_token=${encodeURIComponent(this.opts.shareToken)}`;
-      protocols = [SUBPROTOCOL_YJS, SUBPROTOCOL_LEGACY];
+      protocols = [SUBPROTOCOL_YJS];
     } else {
       const token = await getAccessToken();
       if (!token) {
@@ -219,7 +204,7 @@ export class SyncProvider {
       url = `${WS_BASE}/api/sync/${this.opts.docId}`;
       // Token rides as the second subprotocol — server's bearerToken() pulls
       // it out. Browsers refuse Authorization headers on WS upgrade.
-      protocols = [SUBPROTOCOL_YJS, SUBPROTOCOL_LEGACY, token];
+      protocols = [SUBPROTOCOL_YJS, token];
     }
     const ws = new WebSocket(url, protocols);
     ws.binaryType = "arraybuffer";
@@ -228,7 +213,6 @@ export class SyncProvider {
     ws.onopen = () => {
       this.retryMs = 500;
       this.readonly = false;
-      this.protocol = ws.protocol || SUBPROTOCOL_LEGACY;
       // On reconnect the old pendingSaves counter is meaningless — any
       // ACKs in flight before the drop were lost. Recompute from the outbox:
       // every queued frame is a pending save we still owe the server.
@@ -238,9 +222,7 @@ export class SyncProvider {
       for (const u of queued) this.sendUpdate(u);
       this.flushUpdates();
       this.recomputeSaveState();
-      if (this.protocol === SUBPROTOCOL_YJS) {
-        this.sendYjsSyncStep1();
-      }
+      this.sendYjsSyncStep1();
       if (this.opts.awareness) {
         this.sendAwareness(encodeAwarenessUpdate(this.opts.awareness, [this.opts.awareness.clientID]));
       }
@@ -252,39 +234,7 @@ export class SyncProvider {
     ws.onmessage = (ev) => {
       const data = new Uint8Array(ev.data as ArrayBuffer);
       if (data.length === 0) return;
-      if (this.protocol === SUBPROTOCOL_YJS) {
-        this.handleYjsMessage(data);
-        return;
-      }
-      const tag = data[0];
-      const body = data.subarray(1);
-
-      switch (tag) {
-        case TAG_UPDATE:
-          Y.applyUpdate(this.opts.doc, body, this);
-          break;
-        case TAG_SYNC_COMPLETE:
-          this.synced = true;
-          this.setState("live");
-          break;
-        case TAG_AWARENESS:
-          if (this.opts.awareness) {
-            applyAwarenessUpdate(this.opts.awareness, body, this);
-          }
-          break;
-        case TAG_READONLY:
-          this.readonly = true;
-          this.outbox = [];
-          this.debouncedUpdates = [];
-          this.clearUpdateFlushTimer();
-          this.pendingSaves = 0;
-          this.setState("readonly");
-          break;
-        case TAG_ACK:
-          if (this.pendingSaves > 0) this.pendingSaves--;
-          this.recomputeSaveState();
-          break;
-      }
+      this.handleYjsMessage(data);
     };
 
     ws.onclose = (ev: CloseEvent) => {
@@ -347,14 +297,7 @@ export class SyncProvider {
       this.outbox.push(update);
       return;
     }
-    if (this.protocol === SUBPROTOCOL_YJS) {
-      this.ws.send(encodeYjsSyncFrame(SYNC_UPDATE, update));
-      return;
-    }
-    const frame = new Uint8Array(update.length + 1);
-    frame[0] = TAG_UPDATE;
-    frame.set(update, 1);
-    this.ws.send(frame);
+    this.ws.send(encodeYjsSyncFrame(SYNC_UPDATE, update));
   }
 
   private scheduleUpdateFlush() {
@@ -383,14 +326,7 @@ export class SyncProvider {
       this.awarenessOutbox.push(update);
       return;
     }
-    if (this.protocol === SUBPROTOCOL_YJS) {
-      this.ws.send(encodeYjsAwarenessFrame(update));
-      return;
-    }
-    const frame = new Uint8Array(update.length + 1);
-    frame[0] = TAG_AWARENESS;
-    frame.set(update, 1);
-    this.ws.send(frame);
+    this.ws.send(encodeYjsAwarenessFrame(update));
   }
 
   private sendYjsSyncStep1() {

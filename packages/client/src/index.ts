@@ -15,18 +15,11 @@ import {
   MSG_AWARENESS,
   MSG_READONLY,
   MSG_SYNC,
-  SUBPROTOCOL_LEGACY,
   SUBPROTOCOL_YJS,
   SYNC_STEP_1,
   SYNC_STEP_2,
   SYNC_UPDATE,
 } from "@syncscribe/proto";
-
-const TAG_UPDATE = 0x00;
-const TAG_SYNC_COMPLETE = 0x01;
-const TAG_AWARENESS = 0x02;
-const TAG_READONLY = 0x04;
-const TAG_ACK = 0x05;
 
 const DEFAULT_RETRY_MS = 500;
 const DEFAULT_MAX_RETRY_MS = 15_000;
@@ -104,7 +97,6 @@ export type AttributionSpan = {
 export class SyncClient {
   private ws: WebSocket | null = null;
   private state: ConnectionState = "connecting";
-  private protocol = SUBPROTOCOL_YJS;
   private retryMs = DEFAULT_RETRY_MS;
   private readonly = false;
   private destroyed = false;
@@ -159,12 +151,9 @@ export class SyncClient {
 
     ws.onopen = () => {
       this.retryMs = DEFAULT_RETRY_MS;
-      this.protocol = ws.protocol || SUBPROTOCOL_LEGACY;
       this.readonly = false;
       this.setState("syncing");
-      if (this.protocol === SUBPROTOCOL_YJS) {
-        this.sendYjsSyncStep1();
-      }
+      this.sendYjsSyncStep1();
       for (const pending of this.outbox.splice(0)) this.sendUpdate(pending);
       for (const pending of this.awarenessOutbox.splice(0)) this.sendAwareness(pending);
       if (this.opts.awareness) {
@@ -175,11 +164,7 @@ export class SyncClient {
     ws.onmessage = (event) => {
       const frame = new Uint8Array(event.data as ArrayBuffer);
       if (frame.length === 0) return;
-      if (this.protocol === SUBPROTOCOL_YJS) {
-        this.handleYjsFrame(frame);
-        return;
-      }
-      this.handleLegacyFrame(frame);
+      this.handleYjsFrame(frame);
     };
 
     ws.onclose = (event) => {
@@ -231,31 +216,6 @@ export class SyncClient {
     this.opts.onStateChange?.(state);
   }
 
-  private handleLegacyFrame(frame: Uint8Array) {
-    const tag = frame[0];
-    const body = frame.subarray(1);
-    switch (tag) {
-      case TAG_UPDATE:
-        Y.applyUpdate(this.opts.doc, body, this);
-        return;
-      case TAG_SYNC_COMPLETE:
-        this.synced = true;
-        if (!this.readonly) this.setState("live");
-        return;
-      case TAG_AWARENESS:
-        if (this.opts.awareness) applyAwarenessUpdate(this.opts.awareness, body, this);
-        return;
-      case TAG_READONLY:
-        this.readonly = true;
-        this.setState("readonly");
-        this.opts.onReadonlyChange?.(true);
-        return;
-      case TAG_ACK:
-        this.opts.onAck?.();
-        return;
-    }
-  }
-
   private handleYjsFrame(frame: Uint8Array) {
     const reader = new ByteCursor(frame);
     const msgType = reader.readVarUint();
@@ -301,14 +261,7 @@ export class SyncClient {
       this.outbox.push(update);
       return;
     }
-    if (this.protocol === SUBPROTOCOL_YJS) {
-      this.ws.send(encodeYjsSyncFrame(SYNC_UPDATE, update));
-      return;
-    }
-    const frame = new Uint8Array(update.length + 1);
-    frame[0] = TAG_UPDATE;
-    frame.set(update, 1);
-    this.ws.send(frame);
+    this.ws.send(encodeYjsSyncFrame(SYNC_UPDATE, update));
   }
 
   private sendAwareness(update: Uint8Array) {
@@ -316,14 +269,7 @@ export class SyncClient {
       this.awarenessOutbox.push(update);
       return;
     }
-    if (this.protocol === SUBPROTOCOL_YJS) {
-      this.ws.send(encodeYjsAwarenessFrame(update));
-      return;
-    }
-    const frame = new Uint8Array(update.length + 1);
-    frame[0] = TAG_AWARENESS;
-    frame.set(update, 1);
-    this.ws.send(frame);
+    this.ws.send(encodeYjsAwarenessFrame(update));
   }
 
   private sendYjsSyncStep1() {
@@ -470,7 +416,7 @@ export function buildShareSyncUrl(baseUrl: string, documentId: string, shareToke
 }
 
 export function buildSyncProtocols(bearerToken?: string) {
-  return bearerToken ? [SUBPROTOCOL_YJS, SUBPROTOCOL_LEGACY, bearerToken] : [SUBPROTOCOL_YJS, SUBPROTOCOL_LEGACY];
+  return bearerToken ? [SUBPROTOCOL_YJS, bearerToken] : [SUBPROTOCOL_YJS];
 }
 
 function colorForUser(userId: string) {
