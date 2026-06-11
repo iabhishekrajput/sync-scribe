@@ -72,6 +72,21 @@ export type AttributionResponse = {
   };
 };
 
+export type DocumentEvent = {
+  id: number;
+  document_id: string;
+  actor_id?: string;
+  actor_label: string;
+  event_type: string;
+  detail: Record<string, unknown>;
+  created_at: string;
+};
+
+export type EventStreamOptions = {
+  sinceEventId?: number;
+  signal?: AbortSignal;
+};
+
 export type BlameMark = {
   userId: string;
   name: string;
@@ -332,14 +347,52 @@ export class SyncScribeApiClient {
     return this.request<AttributionResponse>(`/api/documents/${documentId}/attribution?${search.toString()}`);
   }
 
+  async *streamEvents(documentId: string, options: EventStreamOptions = {}): AsyncGenerator<DocumentEvent> {
+    const search = new URLSearchParams();
+    if (options.sinceEventId !== undefined) search.set("sinceEventId", String(options.sinceEventId));
+    const qs = search.toString();
+    const res = await this.fetchRaw(`/api/documents/${documentId}/events${qs ? `?${qs}` : ""}`, {
+      headers: { Accept: "text/event-stream" },
+      signal: options.signal,
+    });
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error("This runtime does not expose a readable response body.");
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() ?? "";
+        for (const part of parts) {
+          const event = parseDocumentEvent(part);
+          if (event) yield event;
+        }
+      }
+      buffer += decoder.decode();
+      const event = parseDocumentEvent(buffer);
+      if (event) yield event;
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
   async request<T>(path: string, init?: RequestInit): Promise<T> {
+    const res = await this.fetchRaw(path, init);
+    return res.json() as Promise<T>;
+  }
+
+  private async fetchRaw(path: string, init?: RequestInit): Promise<Response> {
     const headers = new Headers(init?.headers);
     if (this.accessToken) headers.set("Authorization", `Bearer ${this.accessToken}`);
     const res = await fetch(`${this.baseUrl}${path}`, { ...init, headers });
     if (!res.ok) {
       throw new Error((await res.text().catch(() => "")) || res.statusText);
     }
-    return res.json() as Promise<T>;
+    return res;
   }
 }
 
@@ -442,6 +495,16 @@ function base64ToBytes(value: string) {
 
 function trimTrailingSlash(value: string) {
   return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+function parseDocumentEvent(frame: string): DocumentEvent | null {
+  const data = frame
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n");
+  if (!data) return null;
+  return JSON.parse(data) as DocumentEvent;
 }
 
 class ByteCursor {

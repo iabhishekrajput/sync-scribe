@@ -48,6 +48,7 @@ export type DocumentListParams = {
 
 export type DocumentDetail = {
   document: Document;
+  role: "viewer" | "editor" | "owner";
 };
 
 export type DocumentAccess = {
@@ -58,6 +59,21 @@ export type DocumentAccess = {
   granted_at: string;
   email?: string;
   display_name?: string;
+};
+
+export type AccessRequest = {
+  id: string;
+  document_id: string;
+  requester_id: string;
+  requester_name?: string;
+  requester_email?: string;
+  requested_role: "viewer" | "editor";
+  message?: string;
+  status: "pending" | "approved" | "denied" | "canceled";
+  resolved_by?: string;
+  resolved_at?: string;
+  created_at: string;
+  updated_at: string;
 };
 
 export type Invite = {
@@ -209,6 +225,13 @@ export const api = {
     request<DocumentAccess>("POST", `/api/documents/${id}/access`, { user_id: userId, role }),
   deleteAccess: (id: string, userId: string) =>
     request<void>("DELETE", `/api/documents/${id}/access/${encodeURIComponent(userId)}`),
+  listAccessRequests: (id: string) => request<AccessRequest[]>("GET", `/api/documents/${id}/access-requests`),
+  requestAccess: (id: string, role: "editor" = "editor", message = "") =>
+    request<AccessRequest>("POST", `/api/documents/${id}/access-requests`, { role, message }),
+  approveAccessRequest: (id: string, requestId: string) =>
+    request<AccessRequest>("POST", `/api/documents/${id}/access-requests/${requestId}/approve`),
+  denyAccessRequest: (id: string, requestId: string) =>
+    request<AccessRequest>("POST", `/api/documents/${id}/access-requests/${requestId}/deny`),
   listSnapshots: (id: string) => request<SnapshotSummary[]>("GET", `/api/documents/${id}/snapshots`),
   publishSnapshot: async (id: string, content: string): Promise<{ version: number }> => {
     const token = await getAccessToken();
@@ -227,6 +250,12 @@ export const api = {
   restoreSnapshot: (id: string, version: number) =>
     request<RestoreSnapshotResult>("POST", `/api/documents/${id}/snapshots/${version}/restore`),
   exportMarkdownURL: (id: string) => `${API}/api/documents/${id}/export?format=md`,
+  documentEventsURL: (id: string, sinceEventId?: number) => {
+    const search = new URLSearchParams();
+    if (sinceEventId !== undefined) search.set("sinceEventId", String(sinceEventId));
+    const qs = search.toString();
+    return `${API}/api/documents/${id}/events${qs ? `?${qs}` : ""}`;
+  },
   assetPath: (id: string, assetId: string) => `/api/documents/${id}/assets/${assetId}`,
   assetURL: (id: string, assetId: string) => `${API}/api/documents/${id}/assets/${assetId}`,
   listAssets: (id: string) => request<Asset[]>("GET", `/api/documents/${id}/assets`),

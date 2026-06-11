@@ -117,12 +117,12 @@ func (s *Server) getDocument(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	doc, err := s.store.GetDocument(r.Context(), id, p.Subject)
+	doc, role, err := s.store.ResolveDocumentRole(r.Context(), id, p.Subject)
 	if err != nil {
 		writeStoreErr(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"document": doc})
+	writeJSON(w, http.StatusOK, map[string]any{"document": doc, "role": role})
 }
 
 func (s *Server) listAccess(w http.ResponseWriter, r *http.Request) {

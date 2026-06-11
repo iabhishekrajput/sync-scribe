@@ -17,6 +17,7 @@ import {
 import {
   api,
   type ActivityEvent,
+  type AccessRequest,
   type AttributionUpdate,
   type CreateCommentAnchor,
   type Document,
@@ -255,6 +256,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const [title, setTitle] = useState("");
   const [titleDraft, setTitleDraft] = useState("");
   const [ownerID, setOwnerID] = useState("");
+  const [documentRole, setDocumentRole] = useState<AccessRole>("viewer");
   const [docs, setDocs] = useState<Document[]>([]);
   const [docsLoadFailed, setDocsLoadFailed] = useState(false);
   const [docsSidebarCollapsed, setDocsSidebarCollapsed] = useState(true);
@@ -272,8 +274,11 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const [inviteState, setInviteState] = useState<"idle" | "sending" | "sent" | "error">("idle");
   const [accessList, setAccessList] = useState<DocumentAccess[]>([]);
   const [pendingInvites, setPendingInvites] = useState<Invite[]>([]);
+  const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([]);
   const [accessLoading, setAccessLoading] = useState(false);
   const [accessBusyUserID, setAccessBusyUserID] = useState("");
+  const [accessRequestState, setAccessRequestState] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [accessRequestBusyID, setAccessRequestBusyID] = useState("");
   const [presencePeers, setPresencePeers] = useState<PresencePeer[]>([]);
   const [presenceDockOpen, setPresenceDockOpen] = useState(true);
   const [blameActive, setBlameActive] = useState(false);
@@ -310,6 +315,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
       const access = await api.listAccess(id);
       setAccessList(access);
       setPendingInvites(await api.listInvites(id));
+      setAccessRequests(await api.listAccessRequests(id));
     } catch (err) {
       notifyError(err, "list-access");
     } finally {
@@ -364,6 +370,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
         setTitle(limitDocumentTitle(d.document.title));
         setTitleDraft(limitDocumentTitle(d.document.title));
         setOwnerID(d.document.owner_id);
+        setDocumentRole(d.role);
         try {
           const list = await api.listDocuments();
           if (alive) setDocs(list);
@@ -609,6 +616,34 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
       notifyError(err, "revoke-access");
     } finally {
       setAccessBusyUserID("");
+    }
+  }
+
+  async function requestEditAccess() {
+    setAccessRequestState("sending");
+    try {
+      await api.requestAccess(id, "editor");
+      setAccessRequestState("sent");
+    } catch (err) {
+      notifyError(err, "request-edit-access");
+      setAccessRequestState("error");
+    }
+  }
+
+  async function resolveAccessRequest(request: AccessRequest, decision: "approved" | "denied") {
+    setAccessRequestBusyID(request.id);
+    try {
+      if (decision === "approved") {
+        await api.approveAccessRequest(id, request.id);
+      } else {
+        await api.denyAccessRequest(id, request.id);
+      }
+      setAccessRequests((prev) => prev.filter((item) => item.id !== request.id));
+      if (decision === "approved") await refreshAccessList();
+    } catch (err) {
+      notifyError(err, "resolve-access-request");
+    } finally {
+      setAccessRequestBusyID("");
     }
   }
 
@@ -1447,6 +1482,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
         onClose={() => {
           setShareOpen(false);
           setInviteState("idle");
+          setAccessRequestState("idle");
         }}
         title="Share document"
         width="max-w-xl"
@@ -1494,6 +1530,39 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
             )}
             {inviteState === "error" && (
               <p className="mt-3 text-sm text-red-600 dark:text-red-400">Could not share access.</p>
+            )}
+            {accessRequests.length > 0 && (
+              <div className="mt-5 border-t border-current/10 pt-4">
+                <h3 className="mb-2 text-sm font-semibold">Access requests</h3>
+                <ul className="divide-y divide-current/10 rounded-md border border-current/10">
+                  {accessRequests.map((request) => (
+                    <li key={request.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium">
+                          {request.requester_name || request.requester_email || request.requester_id}
+                        </p>
+                        <p className="truncate text-xs opacity-60">
+                          Wants {request.requested_role} access · {new Date(request.created_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => void resolveAccessRequest(request, "approved")}
+                        disabled={accessRequestBusyID === request.id}
+                        className="rounded px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-300 dark:hover:bg-emerald-950/30"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        onClick={() => void resolveAccessRequest(request, "denied")}
+                        disabled={accessRequestBusyID === request.id}
+                        className="rounded px-2 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50 dark:text-red-400 dark:hover:bg-red-950/30"
+                      >
+                        Deny
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
             <div className="mt-5 border-t border-current/10 pt-4">
               <div className="mb-3 flex items-center justify-between">
@@ -1568,9 +1637,21 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
             </div>
           </>
         ) : (
-          <p className="rounded-md border border-current/10 p-3 text-sm opacity-70">
-            Only the owner can manage document sharing.
-          </p>
+          <div className="rounded-md border border-current/10 p-3">
+            <p className="text-sm opacity-70">Only the owner can manage document sharing.</p>
+            {documentRole === "viewer" && (
+              <div className="mt-3 flex items-center gap-3">
+                <button
+                  onClick={() => void requestEditAccess()}
+                  disabled={accessRequestState === "sending" || accessRequestState === "sent"}
+                  className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                >
+                  {accessRequestState === "sending" ? "Requesting..." : accessRequestState === "sent" ? "Requested" : "Request edit access"}
+                </button>
+                {accessRequestState === "error" && <span className="text-sm text-red-600 dark:text-red-400">Could not send request.</span>}
+              </div>
+            )}
+          </div>
         )}
         <ShareLinksPanel docId={id} isOwner={isOwner} />
         {isOwner && <ActivityLog docId={id} />}
@@ -1771,6 +1852,9 @@ function activityLabel(event: ActivityEvent) {
     "snapshot.published": "published a snapshot",
     "snapshot.restored": "restored a snapshot",
     "invite.created": "sent an invite",
+    "access_request.created": "requested edit access",
+    "access_request.approved": "approved an access request",
+    "access_request.denied": "denied an access request",
     "share_link.created": "created a share link",
     "share_link.revoked": "revoked a share link",
     "comment.created": "added a comment",
