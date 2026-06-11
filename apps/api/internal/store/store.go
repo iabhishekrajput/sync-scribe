@@ -2,10 +2,18 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// Sentinel errors mapped to HTTP status codes by internal/httpx.From.
+var (
+	ErrNotFound     = errors.New("not found")
+	ErrForbidden    = errors.New("forbidden")
+	ErrInvalidInput = errors.New("invalid input")
 )
 
 type Store struct {
