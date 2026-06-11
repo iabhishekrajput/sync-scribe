@@ -40,10 +40,8 @@ func TestSession_PersistsAndBroadcasts(t *testing.T) {
 	h := &Hub{store: st, sessions: map[uuid.UUID]*docSession{}}
 
 	docID := uuid.New()
-	a := &conn{send: make(chan []byte, 16)}
-	a.principal = mockPrincipal()
-	b := &conn{send: make(chan []byte, 16)}
-	b.principal = mockPrincipal()
+	a := &conn{send: make(chan []byte, 16), principal: mockPrincipal()}
+	b := &conn{send: make(chan []byte, 16), principal: mockPrincipal()}
 
 	sess := h.join(docID, a)
 	h.join(docID, b)
@@ -60,22 +58,23 @@ func TestSession_PersistsAndBroadcasts(t *testing.T) {
 
 	select {
 	case frame := <-b.send:
-		if len(frame) < 2 || frame[0] != TagUpdate {
-			t.Fatalf("expected TagUpdate frame, got %v", frame)
+		msgType, syncType, body := decodeYjsSyncFrame(t, frame)
+		if msgType != MsgSync || syncType != SyncUpdate {
+			t.Fatalf("peer: got msg=%d sync=%d want sync/update", msgType, syncType)
 		}
-		if string(frame[1:]) != string(payload) {
-			t.Fatalf("payload mismatch: got %v want %v", frame[1:], payload)
+		if string(body) != string(payload) {
+			t.Fatalf("payload mismatch: got %v want %v", body, payload)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("peer never received broadcast")
 	}
 
-	// Origin receives a TagAck frame (the "Saved" signal) but never receives
-	// its own update echoed back.
+	// Origin receives an Ack flag frame (the "Saved" signal) but never
+	// receives its own update echoed back.
 	select {
 	case f := <-a.send:
-		if len(f) != 1 || f[0] != TagAck {
-			t.Fatalf("origin should only receive TagAck, got %v", f)
+		if msgType := decodeYjsFlagFrame(t, f); msgType != MsgAck {
+			t.Fatalf("origin should only receive Ack, got msg=%d", msgType)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("origin never received ACK")
@@ -92,64 +91,38 @@ func TestSession_PersistsAndBroadcasts(t *testing.T) {
 	}
 }
 
-func TestSession_PersistsAndBroadcastsAcrossProtocols(t *testing.T) {
+// Broker-delivered blobs enter the session via broadcast(nil, blob) — every
+// local client (no origin to skip) must receive a valid SyncUpdate frame.
+func TestSession_BrokerBlobFansOutToAllClients(t *testing.T) {
 	st := newMemStore()
 	h := &Hub{store: st, sessions: map[uuid.UUID]*docSession{}}
-
 	docID := uuid.New()
-	origin := &conn{send: make(chan []byte, 16), principal: mockPrincipal(), protocol: SubprotocolYjs}
-	legacyPeer := &conn{send: make(chan []byte, 16), principal: mockPrincipal(), protocol: SubprotocolLegacy}
-	yjsPeer := &conn{send: make(chan []byte, 16), principal: mockPrincipal(), protocol: SubprotocolYjs}
 
-	sess := h.join(docID, origin)
-	h.join(docID, legacyPeer)
-	h.join(docID, yjsPeer)
+	a := &conn{send: make(chan []byte, 16), principal: mockPrincipal()}
+	b := &conn{send: make(chan []byte, 16), principal: mockPrincipal()}
+	sess := h.join(docID, a)
+	h.join(docID, b)
 	t.Cleanup(func() {
-		sess.unregister(origin)
-		sess.unregister(legacyPeer)
-		sess.unregister(yjsPeer)
+		sess.unregister(a)
+		sess.unregister(b)
 	})
 
-	payload := []byte{0x04, 0x05, 0x06}
-	sess.incoming <- inboundUpdate{
-		from:       origin,
-		blob:       payload,
-		originUser: origin.principal.Subject,
-	}
+	blob := []byte{0x07, 0x08}
+	sess.broadcast(nil, blob)
 
-	select {
-	case frame := <-legacyPeer.send:
-		if len(frame) < 2 || frame[0] != TagUpdate {
-			t.Fatalf("legacy peer: expected TagUpdate, got %v", frame)
+	for name, c := range map[string]*conn{"a": a, "b": b} {
+		select {
+		case frame := <-c.send:
+			msgType, syncType, body := decodeYjsSyncFrame(t, frame)
+			if msgType != MsgSync || syncType != SyncUpdate {
+				t.Fatalf("%s: got msg=%d sync=%d want sync/update", name, msgType, syncType)
+			}
+			if string(body) != string(blob) {
+				t.Fatalf("%s payload mismatch: got %v want %v", name, body, blob)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("conn %s never received broker fan-out", name)
 		}
-		if string(frame[1:]) != string(payload) {
-			t.Fatalf("legacy peer payload mismatch: got %v want %v", frame[1:], payload)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("legacy peer never received broadcast")
-	}
-
-	select {
-	case frame := <-yjsPeer.send:
-		msgType, syncType, body := decodeYjsSyncFrame(t, frame)
-		if msgType != MsgSync || syncType != SyncUpdate {
-			t.Fatalf("yjs peer: got msg=%d sync=%d want sync/update", msgType, syncType)
-		}
-		if string(body) != string(payload) {
-			t.Fatalf("yjs peer payload mismatch: got %v want %v", body, payload)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("yjs peer never received broadcast")
-	}
-
-	select {
-	case frame := <-origin.send:
-		msgType := decodeYjsFlagFrame(t, frame)
-		if msgType != MsgAck {
-			t.Fatalf("origin should receive ACK, got %d", msgType)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("origin never received ACK")
 	}
 }
 

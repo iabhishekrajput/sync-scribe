@@ -29,8 +29,8 @@ func (f *failingStore) AppendUpdate(ctx context.Context, docID uuid.UUID, origin
 	return f.memStore.AppendUpdate(ctx, docID, originUser, blob)
 }
 
-// P1.2 durable-save guarantee: a TagAck must never reach the origin until
-// the update is durably persisted. If AppendUpdate fails the client's
+// P1.2 durable-save guarantee: an Ack must never reach the origin until the
+// update is durably persisted. If AppendUpdate fails the client's
 // pendingSaves counter has to stay non-zero so the UI keeps showing
 // "Saving…" rather than a misleading "Saved".
 func TestSession_NoAckOnPersistFailure(t *testing.T) {
@@ -68,60 +68,13 @@ func TestSession_NoAckOnPersistFailure(t *testing.T) {
 	}
 }
 
-// Replay ordering — the conn must receive every stored update, then
-// SYNC_COMPLETE, then READONLY when applicable. Order matters: a client
-// that observes SYNC_COMPLETE treats the local Y.Doc as caught up, so
-// late-arriving TagUpdate frames after that flip would never be applied
-// before yCollab marks the session live.
-func TestReplayInto_EmitsUpdatesThenSyncComplete(t *testing.T) {
+// Replay ordering — the conn must receive every stored update, then the
+// server's SyncStep1, then Readonly when applicable. Order matters: a client
+// that observes the server's SyncStep1 treats the local Y.Doc as caught up,
+// so late-arriving update frames after that flip would never be applied
+// before the provider marks the session live.
+func TestReplayYjsInto_EmitsUpdatesThenStep1ThenReadonly(t *testing.T) {
 	c := &conn{send: make(chan []byte, 16), principal: mockPrincipal()}
-	updates := [][]byte{{0xAA}, {0xBB, 0xCC}, {0xDD, 0xEE, 0xFF}}
-	replayInto(c, updates, true)
-
-	for i, u := range updates {
-		select {
-		case f := <-c.send:
-			if len(f) < 1 || f[0] != TagUpdate {
-				t.Fatalf("frame %d: expected TagUpdate, got %v", i, f)
-			}
-			if string(f[1:]) != string(u) {
-				t.Fatalf("frame %d payload: got %v want %v", i, f[1:], u)
-			}
-		case <-time.After(time.Second):
-			t.Fatalf("frame %d never arrived", i)
-		}
-	}
-	select {
-	case f := <-c.send:
-		if len(f) != 1 || f[0] != TagSyncComplete {
-			t.Fatalf("expected TagSyncComplete after replays, got %v", f)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("TagSyncComplete never arrived")
-	}
-	select {
-	case f := <-c.send:
-		t.Fatalf("expected no frame after SyncComplete for writeable conn, got %v", f)
-	case <-time.After(30 * time.Millisecond):
-	}
-}
-
-func TestReplayInto_ReadonlyAppendsReadonlyTag(t *testing.T) {
-	c := &conn{send: make(chan []byte, 4), principal: mockPrincipal()}
-	replayInto(c, nil, false)
-
-	got := drainSend(c)
-	if len(got) != 2 || got[0][0] != TagSyncComplete || got[1][0] != TagReadonly {
-		t.Fatalf("expected [SyncComplete, Readonly], got %v", got)
-	}
-}
-
-func TestReplayYjsInto_EmitsUpdatesThenStep1(t *testing.T) {
-	c := &conn{
-		send:      make(chan []byte, 16),
-		principal: mockPrincipal(),
-		protocol:  SubprotocolYjs,
-	}
 	updates := [][]byte{{0xAA}, {0xBB, 0xCC}}
 	replayYjsInto(c, updates, false)
 
@@ -155,12 +108,68 @@ func TestReplayYjsInto_EmitsUpdatesThenStep1(t *testing.T) {
 
 	select {
 	case frame := <-c.send:
-		msgType := decodeYjsFlagFrame(t, frame)
-		if msgType != MsgReadonly {
+		if msgType := decodeYjsFlagFrame(t, frame); msgType != MsgReadonly {
 			t.Fatalf("expected readonly flag, got %d", msgType)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("readonly flag never arrived")
+	}
+}
+
+func TestReplayYjsInto_WriteableConnGetsNoReadonly(t *testing.T) {
+	c := &conn{send: make(chan []byte, 4), principal: mockPrincipal()}
+	replayYjsInto(c, nil, true)
+
+	got := drainSend(c)
+	if len(got) != 1 {
+		t.Fatalf("expected only SyncStep1 for empty doc, got %d frames: %v", len(got), got)
+	}
+	msgType, syncType, _ := decodeYjsSyncFrame(t, got[0])
+	if msgType != MsgSync || syncType != SyncStep1 {
+		t.Fatalf("expected sync step1, got msg=%d sync=%d", msgType, syncType)
+	}
+}
+
+// History is replayed at connection-open; a client's own SyncStep1 arriving
+// afterwards must be ignored — no second replay, no response frames.
+func TestConn_ClientSyncStep1AfterReplayIsIgnored(t *testing.T) {
+	st := newMemStore()
+	docID := uuid.New()
+	_, _ = st.AppendUpdate(context.Background(), docID, "u-test", []byte{0x42})
+	h := &Hub{store: st, sessions: map[uuid.UUID]*docSession{}}
+
+	c := &conn{send: make(chan []byte, 16), principal: mockPrincipal()}
+	c.canWrite.Store(true)
+	sess := h.join(docID, c)
+	t.Cleanup(func() { sess.unregister(c) })
+
+	c.handleYjsFrame(sess, encodeYjsSyncFrame(SyncStep1, nil))
+
+	select {
+	case f := <-c.send:
+		t.Fatalf("client SyncStep1 must not trigger any frames, got %v", f)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// Client SyncStep2 payloads are validated and discarded — never persisted,
+// never broadcast. See protocol.go for the compaction rationale.
+func TestConn_ClientSyncStep2IsDiscarded(t *testing.T) {
+	st := newMemStore()
+	docID := uuid.New()
+	h := &Hub{store: st, sessions: map[uuid.UUID]*docSession{}}
+
+	c := &conn{send: make(chan []byte, 16), principal: mockPrincipal()}
+	c.canWrite.Store(true)
+	sess := h.join(docID, c)
+	t.Cleanup(func() { sess.unregister(c) })
+
+	c.handleYjsFrame(sess, encodeYjsSyncFrame(SyncStep2, []byte{0x01, 0x02}))
+
+	time.Sleep(100 * time.Millisecond)
+	stored, _ := st.LoadUpdates(context.Background(), docID)
+	if len(stored) != 0 {
+		t.Fatalf("SyncStep2 must not be persisted, got %d rows", len(stored))
 	}
 }
 
@@ -184,16 +193,8 @@ func TestSession_ReplayAfterDropContainsAllPersistedUpdates(t *testing.T) {
 		originUser: writer.principal.Subject,
 	}
 	// Drain the writer's ACKs so the channel doesn't block other tests.
-	deadline := time.After(time.Second)
-	for got := 0; got < 2; {
-		select {
-		case f := <-writer.send:
-			if len(f) == 1 && f[0] == TagAck {
-				got++
-			}
-		case <-deadline:
-			t.Fatal("writer never received both ACKs")
-		}
+	for got := 0; got < 2; got++ {
+		waitForAck(t, writer)
 	}
 	sess.unregister(writer)
 
@@ -204,20 +205,20 @@ func TestSession_ReplayAfterDropContainsAllPersistedUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadUpdates: %v", err)
 	}
-	replayInto(rejoin, stored, true)
+	replayYjsInto(rejoin, stored, true)
 
 	got := drainSend(rejoin)
 	if len(got) != 3 {
-		t.Fatalf("expected 3 frames (2 updates + SyncComplete), got %d: %v", len(got), got)
+		t.Fatalf("expected 3 frames (2 updates + SyncStep1), got %d: %v", len(got), got)
 	}
-	if got[0][0] != TagUpdate || string(got[0][1:]) != "\x10" {
-		t.Fatalf("frame 0 wrong: %v", got[0])
+	for i, want := range [][]byte{{0x10}, {0x20, 0x21}} {
+		msgType, syncType, body := decodeYjsSyncFrame(t, got[i])
+		if msgType != MsgSync || syncType != SyncUpdate || string(body) != string(want) {
+			t.Fatalf("frame %d wrong: msg=%d sync=%d body=%v want %v", i, msgType, syncType, body, want)
+		}
 	}
-	if got[1][0] != TagUpdate || string(got[1][1:]) != "\x20\x21" {
-		t.Fatalf("frame 1 wrong: %v", got[1])
-	}
-	if got[2][0] != TagSyncComplete {
-		t.Fatalf("frame 2 should be SyncComplete, got %v", got[2])
+	if _, syncType, _ := decodeYjsSyncFrame(t, got[2]); syncType != SyncStep1 {
+		t.Fatalf("frame 2 should be SyncStep1, got %v", got[2])
 	}
 }
 
@@ -243,18 +244,22 @@ func TestSession_NewHubReplaysSameBytes(t *testing.T) {
 		t.Fatalf("LoadUpdates: %v", err)
 	}
 	c := &conn{send: make(chan []byte, 4), principal: mockPrincipal()}
-	replayInto(c, stored, true)
+	replayYjsInto(c, stored, true)
 	got := drainSend(c)
-	if len(got) != 2 || got[0][0] != TagUpdate || string(got[0][1:]) != "\x42" || got[1][0] != TagSyncComplete {
+	if len(got) != 2 {
 		t.Fatalf("post-restart replay diverged: %v", got)
+	}
+	if _, syncType, body := decodeYjsSyncFrame(t, got[0]); syncType != SyncUpdate || string(body) != "\x42" {
+		t.Fatalf("frame 0 wrong: %v", got[0])
+	}
+	if _, syncType, _ := decodeYjsSyncFrame(t, got[1]); syncType != SyncStep1 {
+		t.Fatalf("frame 1 should be SyncStep1, got %v", got[1])
 	}
 }
 
-// Readonly viewer must not be able to push updates: even if the client
-// sends TagUpdate, canWrite=false should short-circuit before the session
-// queue and no append nor broadcast should happen. We test the predicate
-// directly (readPump's switch path) because driving the full ws round-trip
-// requires real auth.
+// Readonly viewer must not be able to push updates: a SyncUpdate from a
+// !canWrite conn is rejected by acceptUpdate before the session queue — the
+// viewer gets a Readonly notice and nothing reaches the store.
 func TestConn_ReadonlyViewerCannotAppend(t *testing.T) {
 	st := newMemStore()
 	h := &Hub{store: st, sessions: map[uuid.UUID]*docSession{}}
@@ -267,19 +272,17 @@ func TestConn_ReadonlyViewerCannotAppend(t *testing.T) {
 	sess := h.join(docID, viewer)
 	t.Cleanup(func() { sess.unregister(viewer) })
 
-	// Simulate what the readPump short-circuit does for a !canWrite frame:
-	// emit TagReadonly, do NOT push to sess.incoming. Then verify the store
-	// stays empty.
-	viewer.enqueue([]byte{TagReadonly})
+	viewer.handleYjsFrame(sess, encodeYjsSyncFrame(SyncUpdate, []byte{0x99}))
 
 	select {
 	case f := <-viewer.send:
-		if len(f) != 1 || f[0] != TagReadonly {
-			t.Fatalf("expected TagReadonly, got %v", f)
+		if msgType := decodeYjsFlagFrame(t, f); msgType != MsgReadonly {
+			t.Fatalf("expected Readonly notice, got msg=%d", msgType)
 		}
 	case <-time.After(100 * time.Millisecond):
-		t.Fatal("viewer never got TagReadonly")
+		t.Fatal("viewer never got Readonly notice")
 	}
+	time.Sleep(50 * time.Millisecond)
 	stored, _ := st.LoadUpdates(context.Background(), docID)
 	if len(stored) != 0 {
 		t.Fatalf("readonly conn somehow wrote %d updates", len(stored))
@@ -337,7 +340,8 @@ func waitForAck(t *testing.T, c *conn) {
 	for {
 		select {
 		case f := <-c.send:
-			if len(f) == 1 && f[0] == TagAck {
+			r := byteReader{b: f}
+			if msgType, err := r.readVarUint(); err == nil && msgType == MsgAck && r.i == len(r.b) {
 				return
 			}
 		case <-time.After(time.Second):

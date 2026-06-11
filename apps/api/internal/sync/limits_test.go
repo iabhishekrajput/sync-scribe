@@ -84,8 +84,8 @@ func TestClientIP_HonorsXFFOnlyFromLoopback(t *testing.T) {
 }
 
 // Mid-session permission revocation: when setCanWrite(false) flips on a live
-// conn, the next TagUpdate intent must not produce a broadcast. We don't
-// drive a real ws round-trip here — the contract under test is that
+// conn, the next update intent must not produce a broadcast. We don't drive
+// a real ws round-trip here — the contract under test is that
 // canWrite.Load() reflects the change atomically and the read path rejects
 // updates without entering the session queue.
 func TestConn_RevocationStopsUpdates(t *testing.T) {
@@ -107,21 +107,22 @@ func TestConn_RevocationStopsUpdates(t *testing.T) {
 		t.Fatal("revocation did not flip canWrite")
 	}
 
-	// Drain any TagReadonly notice setCanWrite would have queued. (The
-	// helper isn't invoked here because we set the field directly, but
-	// calling setCanWrite goes through the helper so we cover both paths.)
+	// Drain the Readonly notice setCanWrite queues. (The helper isn't
+	// invoked above because we set the field directly, but calling
+	// setCanWrite goes through the helper so we cover both paths.)
 	c.setCanWrite(false)
+	readonlyFrame := encodeYjsFlagFrame(MsgReadonly)
 	for {
 		select {
 		case f := <-c.send:
-			if len(f) == 1 && f[0] == TagReadonly {
+			if string(f) == string(readonlyFrame) {
 				sent.Add(1)
 				continue
 			}
 			t.Fatalf("unexpected frame queued during revocation: %v", f)
 		case <-time.After(20 * time.Millisecond):
 			if sent.Load() == 0 {
-				t.Fatal("expected TagReadonly notice after setCanWrite(false)")
+				t.Fatal("expected Readonly notice after setCanWrite(false)")
 			}
 			return
 		}

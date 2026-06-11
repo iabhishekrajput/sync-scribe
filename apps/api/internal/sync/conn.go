@@ -30,7 +30,6 @@ type conn struct {
 	ws              *websocket.Conn
 	send            chan []byte
 	principal       *auth.Principal
-	protocol        string
 	canWrite        atomic.Bool
 	awarenessClocks map[uint64]uint64
 
@@ -49,15 +48,13 @@ type conn struct {
 	// resyncOnce guards the close-with-4010 path so concurrent overflows on
 	// the read and write sides don't double-send a close frame.
 	resyncOnce sync.Once
-	syncStarted bool
 }
 
-func newConn(ws *websocket.Conn, p *auth.Principal, canWrite bool, protocol string) *conn {
+func newConn(ws *websocket.Conn, p *auth.Principal, canWrite bool) *conn {
 	c := &conn{
 		ws:              ws,
 		send:            make(chan []byte, outboundBuffer),
 		principal:       p,
-		protocol:        protocol,
 		awarenessClocks: make(map[uint64]uint64),
 		updateBucket:    newTokenBucket(defaultUpdatesPerSec, defaultUpdateBurst),
 		byteBucket:      newTokenBucket(defaultBytesPerSec, defaultByteBurst),
@@ -69,11 +66,7 @@ func newConn(ws *websocket.Conn, p *auth.Principal, canWrite bool, protocol stri
 func (c *conn) setCanWrite(canWrite bool) {
 	c.canWrite.Store(canWrite)
 	if !canWrite {
-		if c.protocol == SubprotocolYjs {
-			c.enqueue(encodeYjsFlagFrame(MsgReadonly))
-		} else {
-			c.enqueue([]byte{TagReadonly})
-		}
+		c.enqueue(encodeYjsFlagFrame(MsgReadonly))
 	}
 }
 
@@ -192,73 +185,7 @@ func (c *conn) readPump(s *docSession) {
 			wsErrors.WithLabelValues("bad_frame").Inc()
 			continue
 		}
-
-		if c.protocol == SubprotocolYjs {
-			c.handleYjsFrame(s, payload)
-			continue
-		}
-
-		switch payload[0] {
-		case TagUpdate:
-			if !c.canWrite.Load() {
-				wsErrors.WithLabelValues("readonly_update").Inc()
-				c.enqueue([]byte{TagReadonly})
-				continue
-			}
-			// Per-connection rate limit. We charge a frame token and a byte
-			// token sized by payload length; either bucket exhaustion kicks
-			// the connection with closeRateLimited so the client doesn't
-			// silently retry-storm.
-			if c.updateBucket != nil && !c.updateBucket.take(1) {
-				wsErrors.WithLabelValues("rate_frames").Inc()
-				c.closeWithCode(closeRateLimited, "update frame rate")
-				return
-			}
-			if c.byteBucket != nil && !c.byteBucket.take(float64(len(payload))) {
-				wsErrors.WithLabelValues("rate_bytes").Inc()
-				c.closeWithCode(closeRateLimited, "update byte rate")
-				return
-			}
-			updatesReceived.Inc()
-			body := append([]byte(nil), payload[1:]...)
-			// Guests (share-link visitors) have no row in users — passing
-			// the synthetic 'guest:<token>' subject as origin_user would
-			// blow up the FK on document_updates. Send empty so the
-			// store's NULLIF($3,'') stores NULL.
-			originUser := c.principal.Subject
-			if c.principal.Actor == auth.ActorGuest {
-				originUser = ""
-			}
-			select {
-			case s.incoming <- inboundUpdate{
-				from:       c,
-				blob:       body,
-				originUser: originUser,
-			}:
-			default:
-				wsErrors.WithLabelValues("incoming_overflow").Inc()
-			}
-		case TagPing:
-			// no-op; client may use as latency probe later
-		case TagAwareness:
-			body := append([]byte(nil), payload[1:]...)
-			if c.principal.Actor == auth.ActorGuest {
-				sanitized, err := sanitizeGuestAwareness(body)
-				if err != nil {
-					wsErrors.WithLabelValues("bad_awareness").Inc()
-					continue
-				}
-				body = sanitized
-			}
-			c.rememberAwareness(body)
-			select {
-			case s.awareness <- awarenessUpdate{from: c, blob: body}:
-			default:
-				wsErrors.WithLabelValues("awareness_overflow").Inc()
-			}
-		default:
-			wsErrors.WithLabelValues("unknown_tag").Inc()
-		}
+		c.handleYjsFrame(s, payload)
 	}
 }
 
@@ -278,27 +205,13 @@ func (c *conn) handleYjsFrame(s *docSession, payload []byte) {
 		}
 		switch syncType {
 		case SyncStep1:
-			if _, err := r.readVarBytes(); err != nil {
+			// History was already replayed at connection-open; a client's
+			// SyncStep1 is validated and ignored. See protocol.go.
+			if _, err := r.readVarBytes(); err != nil || r.i != len(r.b) {
 				wsErrors.WithLabelValues("bad_frame").Inc()
-				return
 			}
-			if r.i != len(r.b) {
-				wsErrors.WithLabelValues("bad_frame").Inc()
-				return
-			}
-			if c.syncStarted {
-				return
-			}
-			c.syncStarted = true
-			replayCtx, replayCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			updates, err := s.hub.store.LoadUpdates(replayCtx, s.docID)
-			replayCancel()
-			if err != nil {
-				_ = c.ws.Close()
-				return
-			}
-			replayYjsInto(c, updates, c.canWrite.Load())
 		case SyncStep2:
+			// Validated and discarded — see protocol.go for why.
 			if _, err := r.readVarBytes(); err != nil {
 				wsErrors.WithLabelValues("bad_frame").Inc()
 			}

@@ -200,11 +200,7 @@ func (s *docSession) loop() {
 			// ACK back to origin so the client can drive a "Saved" indicator.
 			// One ACK per persisted update; pure count match — no payload —
 			// because origin already knows the bytes it shipped.
-			if up.from.protocol == SubprotocolYjs {
-				up.from.enqueue(encodeYjsFlagFrame(MsgAck))
-			} else {
-				up.from.enqueue([]byte{TagAck})
-			}
+			up.from.enqueue(encodeYjsFlagFrame(MsgAck))
 			s.broadcast(up.from, up.blob)
 
 			// Publish to peer nodes so connections on other API instances also
@@ -227,46 +223,29 @@ func (s *docSession) loop() {
 }
 
 // broadcast sends an update frame to every connected client except origin.
+// The frame is encoded once and shared: enqueued frames are read-only.
 func (s *docSession) broadcast(origin *conn, blob []byte) {
+	frame := encodeYjsSyncFrame(SyncUpdate, blob)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	peers := 0
 	for c := range s.clients {
 		if c == origin {
 			continue
 		}
-		frame := make([]byte, 0, len(blob)+1)
-		if c.protocol == SubprotocolYjs {
-			frame = encodeYjsSyncFrame(SyncUpdate, blob)
-		} else {
-			frame = append(frame, TagUpdate)
-			frame = append(frame, blob...)
-		}
 		c.enqueue(frame)
-		peers++
 		broadcastBytes.Add(float64(len(frame)))
 	}
-	_ = peers
 }
 
 func (s *docSession) broadcastAwareness(origin *conn, blob []byte) {
+	frame := encodeYjsAwarenessFrame(blob)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	peers := 0
 	for c := range s.clients {
 		if c == origin {
 			continue
 		}
-		frame := make([]byte, 0, len(blob)+1)
-		if c.protocol == SubprotocolYjs {
-			frame = encodeYjsAwarenessFrame(blob)
-		} else {
-			frame = append(frame, TagAwareness)
-			frame = append(frame, blob...)
-		}
 		c.enqueue(frame)
-		peers++
 		broadcastBytes.Add(float64(len(frame)))
 	}
-	_ = peers
 }
