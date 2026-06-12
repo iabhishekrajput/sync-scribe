@@ -9,6 +9,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "lint": "echo 'no lint yet'",
     "typecheck": "tsc --noEmit",
     "test": "echo 'no tests yet'"
