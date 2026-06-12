@@ -7,7 +7,9 @@ import { describe, expect, it } from "vitest";
 import { SyncClient } from "../sync-client";
 import type { SaveState } from "../types";
 
-const shareUrl = process.env.SYNCSCRIBE_E2E_SHARE_URL;
+// Read via globalThis so this browser-typed package doesn't need @types/node.
+const shareUrl = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+  ?.env?.SYNCSCRIBE_E2E_SHARE_URL;
 
 describe.skipIf(!shareUrl)("live server e2e", () => {
   it("two clients converge through the server", { timeout: 15_000 }, async () => {
