@@ -27,7 +27,7 @@ import {
   type SnapshotBody,
   type SnapshotSummary,
 } from "../../lib/api";
-import { fetchMe, getAccessToken, loginURL } from "../../lib/auth";
+import { fetchMe, getAccessToken, loginURL, type Me } from "../../lib/auth";
 import { colorForUser } from "../../lib/avatar";
 import { ApiError, notifyError } from "../../lib/errors";
 import { toast } from "sonner";
@@ -57,7 +57,6 @@ import {
   SpinnerIcon,
 } from "../../components/icons";
 
-type Me = { id: string; email: string; display_name: string };
 type InviteRole = "viewer" | "editor";
 type AccessRole = "viewer" | "editor" | "owner";
 type PresencePeer = {
@@ -358,7 +357,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   useEffect(() => {
     let alive = true;
     (async () => {
-      const m = (await fetchMe()) as Me | null;
+      const m = await fetchMe();
       if (!alive) return;
       setMe(m);
       if (!m) {

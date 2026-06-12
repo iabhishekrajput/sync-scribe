@@ -4,11 +4,10 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api, type Document } from "./lib/api";
-import { fetchMe } from "./lib/auth";
+import { fetchMe, type Me } from "./lib/auth";
 import { notifyError } from "./lib/errors";
 import { TopBar } from "./components/TopBar";
 
-type Me = { id: string; email: string; display_name: string };
 type DocumentTab = "all" | "owned" | "shared";
 
 export default function Dashboard() {
@@ -36,7 +35,7 @@ export default function Dashboard() {
   useEffect(() => {
     let alive = true;
     (async () => {
-      const m = (await fetchMe()) as Me | null;
+      const m = await fetchMe();
       if (!alive) return;
       setMe(m);
       if (alive) setLoading(false);
