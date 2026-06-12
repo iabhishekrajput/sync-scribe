@@ -1,5 +1,7 @@
 "use client";
 
+import type { AttributionQuery, AttributionResponse, DocumentEvent as ActivityEvent } from "@syncscribe/client";
+
 import { getAccessToken } from "./auth";
 import { ApiError, parseApiError } from "./errors";
 
@@ -155,19 +157,11 @@ export type CreateCommentAnchor = {
   anchor_text?: string;
 };
 
-export type ActivityEvent = {
-  id: number;
-  document_id: string;
-  actor_id?: string;
-  actor_label: string;
-  event_type: string;
-  detail: Record<string, unknown>;
-  created_at: string;
-};
+// The SSE/event and attribution shapes are owned by the SDK; re-exported
+// here so app code keeps a single import path for API types.
+export type { AttributionQuery, AttributionResponse, AttributionUpdate } from "@syncscribe/client";
+export type { DocumentEvent as ActivityEvent } from "@syncscribe/client";
 
-// One persisted Yjs update batch with identity metadata. blob is base64
-// (Go encodes []byte as base64 in JSON). Used by the client-side blame
-// computer to replay updates and attribute characters to their authors.
 export type Asset = {
   id: string;
   document_id: string;
@@ -176,34 +170,6 @@ export type Asset = {
   content_type: string;
   size_bytes: number;
   created_at: string;
-};
-
-export type AttributionUpdate = {
-  seq: number;
-  origin_user: string;
-  origin_name: string;
-  created_at: string;
-  blob: string; // base64
-};
-
-export type AttributionQuery = {
-  fromItem?: string;
-  toItem?: string;
-  sinceUpdateId?: number;
-  limit?: number;
-};
-
-export type AttributionResponse = {
-  updates: AttributionUpdate[];
-  range: {
-    from_item?: string;
-    to_item?: string;
-  };
-  cursor: {
-    since_update_id: number;
-    next_since_update_id: number;
-    limit: number;
-  };
 };
 
 export const api = {

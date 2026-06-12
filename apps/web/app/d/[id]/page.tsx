@@ -28,6 +28,7 @@ import {
   type SnapshotSummary,
 } from "../../lib/api";
 import { fetchMe, getAccessToken, loginURL } from "../../lib/auth";
+import { colorForUser } from "../../lib/avatar";
 import { ApiError, notifyError } from "../../lib/errors";
 import { toast } from "sonner";
 import { TopBar } from "../../components/TopBar";
@@ -3011,25 +3012,3 @@ function CommentInputPopup({
   );
 }
 
-const presenceColors = [
-  { color: "#2563eb", light: "#bfdbfe" },
-  { color: "#16a34a", light: "#bbf7d0" },
-  { color: "#dc2626", light: "#fecaca" },
-  { color: "#9333ea", light: "#e9d5ff" },
-  { color: "#ea580c", light: "#fed7aa" },
-  { color: "#0891b2", light: "#cffafe" },
-  { color: "#be123c", light: "#ffe4e6" },
-  { color: "#4f46e5", light: "#c7d2fe" },
-  { color: "#65a30d", light: "#d9f99d" },
-  { color: "#c026d3", light: "#f5d0fe" },
-  { color: "#0d9488", light: "#ccfbf1" },
-  { color: "#ca8a04", light: "#fef08a" },
-] as const;
-
-function colorForUser(userID: string) {
-  let hash = 0;
-  for (const ch of userID) {
-    hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
-  }
-  return presenceColors[hash % presenceColors.length];
-}
