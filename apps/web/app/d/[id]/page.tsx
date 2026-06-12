@@ -29,6 +29,27 @@ import {
 } from "../../lib/api";
 import { fetchMe, getAccessToken, loginURL, type Me } from "../../lib/auth";
 import { colorForUser } from "../../lib/avatar";
+import { computeBlame } from "@syncscribe/client";
+import {
+  buildCommentAnchorDraft,
+  resolveCommentAnchor,
+  type CommentAnchorDraft,
+  type ResolvedCommentAnchor,
+} from "../../lib/commentAnchors";
+import { buildLineDiff, type LineDiff } from "../../lib/lineDiff";
+import {
+  collectPresencePeers,
+  presenceInitial,
+  presenceStatus,
+  samePeerList,
+  type PresencePeer,
+} from "../../lib/presence";
+import {
+  applyCommentHighlight,
+  clearPreviewCommentHighlight,
+  highlightPreviewCommentRange,
+  scrollPreviewToLine,
+} from "../../lib/previewHighlight";
 import { ApiError, notifyError } from "../../lib/errors";
 import { toast } from "sonner";
 import { TopBar } from "../../components/TopBar";
@@ -59,25 +80,6 @@ import {
 
 type InviteRole = "viewer" | "editor";
 type AccessRole = "viewer" | "editor" | "owner";
-type PresencePeer = {
-  clientID: number;
-  name: string;
-  color: string;
-  actor: string;
-  typingAt?: number;
-  connected: boolean;
-  lastSeen: number;
-};
-type CommentAnchorDraft = CreateCommentAnchor & {
-  from: number;
-  to: number;
-  line: number;
-};
-type ResolvedCommentAnchor = {
-  from: number | null;
-  to: number | null;
-  line: number | null;
-};
 type CommentDeleteTarget = {
   id: string;
   label: string;
@@ -89,8 +91,6 @@ type ExportStatus =
   | { state: "stale"; version: number; createdAt: string };
 
 const DOCUMENT_TITLE_MAX_CHARS = 80;
-const COMMENT_SNIPPET_MAX_CHARS = 160;
-const PRESENCE_LINGER_MS = 5000;
 
 type BlameInfo = {
   user: string;
@@ -101,143 +101,20 @@ type BlameInfo = {
 };
 type BlameMap = (BlameInfo | null)[];
 
-// --- Blame computation ---
-
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-function encodeBase64(bytes: Uint8Array) {
-  let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin);
-}
-
-function decodeBase64(raw: string) {
-  const bin = atob(raw);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-function compactCommentSnippet(text: string) {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (normalized.length <= COMMENT_SNIPPET_MAX_CHARS) return normalized;
-  return `${normalized.slice(0, COMMENT_SNIPPET_MAX_CHARS - 1)}…`;
-}
-
-function buildCommentAnchorDraft(
-  editor: Monaco.editor.IStandaloneCodeEditor,
-  ytext: Y.Text,
-  clickedPos: number | null,
-): CommentAnchorDraft {
-  const model = editor.getModel();
-  const selection = editor.getSelection();
-  if (!model || !selection) {
-    const fallback = clickedPos ?? 0;
+// Blame replay comes from the SDK; guests keep their neutral gray here so
+// anonymous edits don't masquerade as a palette identity.
+function buildBlameMap(updates: AttributionUpdate[]): BlameMap {
+  return computeBlame(updates).map((mark) => {
+    if (!mark) return null;
+    const guest = mark.userId === "guest";
     return {
-      from: fallback,
-      to: fallback,
-      line: 1,
-      line_number: 1,
-      anchor_start: encodeBase64(Y.encodeRelativePosition(Y.createRelativePositionFromTypeIndex(ytext, fallback))),
-      anchor_end: encodeBase64(Y.encodeRelativePosition(Y.createRelativePositionFromTypeIndex(ytext, fallback))),
-      anchor_text: "",
+      user: guest ? "" : mark.userId,
+      name: guest ? "Guest" : mark.name,
+      color: guest ? "#737373" : mark.color,
+      seq: mark.seq,
+      createdAt: mark.createdAt,
     };
-  }
-  const selectionFrom = model.getOffsetAt(selection.getStartPosition());
-  const selectionTo = model.getOffsetAt(selection.getEndPosition());
-  const anchorPos = clickedPos ?? selectionFrom;
-  const useSelection = !selection.isEmpty() && anchorPos >= selectionFrom && anchorPos <= selectionTo;
-  const from = useSelection ? selectionFrom : anchorPos;
-  const to = useSelection ? selectionTo : anchorPos;
-  const line = model.getPositionAt(from).lineNumber;
-  return {
-    from,
-    to,
-    line,
-    line_number: line,
-    anchor_start: encodeBase64(Y.encodeRelativePosition(Y.createRelativePositionFromTypeIndex(ytext, from))),
-    anchor_end: encodeBase64(Y.encodeRelativePosition(Y.createRelativePositionFromTypeIndex(ytext, to))),
-    anchor_text: from === to ? "" : compactCommentSnippet(model.getValueInRange({
-      startLineNumber: model.getPositionAt(from).lineNumber,
-      startColumn: model.getPositionAt(from).column,
-      endLineNumber: model.getPositionAt(to).lineNumber,
-      endColumn: model.getPositionAt(to).column,
-    })),
-  };
-}
-
-function resolveRelativeIndex(ydoc: Y.Doc, ytext: Y.Text, encoded?: string) {
-  if (!encoded) return null;
-  try {
-    const pos = Y.decodeRelativePosition(decodeBase64(encoded));
-    const absolute = Y.createAbsolutePositionFromRelativePosition(pos, ydoc);
-    if (!absolute || absolute.type !== ytext) return null;
-    return absolute.index;
-  } catch {
-    return null;
-  }
-}
-
-function resolveCommentAnchor(comment: DocumentComment, ydoc: Y.Doc, ytext: Y.Text) {
-  const from = resolveRelativeIndex(ydoc, ytext, comment.anchor_start);
-  const to = resolveRelativeIndex(ydoc, ytext, comment.anchor_end);
-  if (from !== null && to !== null) {
-    const start = Math.min(from, to);
-    const end = Math.max(from, to);
-    return {
-      from: start,
-      to: end,
-      line: ytext.toString().slice(0, start).split("\n").length,
-    } satisfies ResolvedCommentAnchor;
-  }
-  return {
-    from: null,
-    to: null,
-    line: comment.line_number ?? null,
-  } satisfies ResolvedCommentAnchor;
-}
-
-function computeBlame(updates: AttributionUpdate[]): BlameMap {
-  const blameDoc = new Y.Doc();
-  const blameText = blameDoc.getText("content");
-  let blame: BlameMap = [];
-
-  for (const update of updates) {
-    const info: BlameInfo = {
-      user: update.origin_user,
-      name: update.origin_name || update.origin_user || "Unknown",
-      color: update.origin_user ? colorForUser(update.origin_user).color : "#737373",
-      seq: update.seq,
-      createdAt: update.created_at,
-    };
-    const observer = (event: Y.YTextEvent) => {
-      const next: BlameMap = [];
-      let oldIdx = 0;
-      for (const op of event.changes.delta) {
-        if ("retain" in op && op.retain) {
-          for (let i = 0; i < (op.retain as number); i++) next.push(blame[oldIdx++] ?? null);
-        } else if ("insert" in op && op.insert) {
-          const len = typeof op.insert === "string" ? (op.insert as string).length : 1;
-          for (let i = 0; i < len; i++) next.push(info);
-        } else if ("delete" in op && op.delete) {
-          oldIdx += op.delete as number;
-        }
-      }
-      while (oldIdx < blame.length) next.push(blame[oldIdx++]);
-      blame = next;
-    };
-    blameText.observe(observer);
-    Y.applyUpdate(blameDoc, base64ToBytes(update.blob));
-    blameText.unobserve(observer);
-  }
-
-  blameDoc.destroy();
-  return blame;
+  });
 }
 
 function limitDocumentTitle(title: string) {
@@ -954,7 +831,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     setBlameLoading(true);
     try {
       const { updates } = await api.getAttribution(id);
-      setBlameMap(computeBlame(updates));
+      setBlameMap(buildBlameMap(updates));
     } catch (err) {
       notifyError(err, "load-blame");
       setBlameActive(false);
@@ -1864,49 +1741,6 @@ function activityLabel(event: ActivityEvent) {
   return labels[event.event_type] ?? event.event_type.replaceAll(".", " ");
 }
 
-function collectPresencePeers(awareness: Awareness, previous: PresencePeer[]) {
-  const now = Date.now();
-  const previousByID = new Map(previous.map((peer) => [peer.clientID, peer]));
-  const seen = new Set<number>();
-  const next: PresencePeer[] = [];
-
-  awareness.getStates().forEach((state, clientID) => {
-    if (clientID === awareness.clientID) return;
-    const user = state.user as
-      | { actor?: string; name?: string; color?: string; typingAt?: number }
-      | undefined;
-    if (!user) return;
-    seen.add(clientID);
-    next.push({
-      clientID,
-      name: user.name || "Someone",
-      color: user.color || previousByID.get(clientID)?.color || "#737373",
-      actor: user.actor || "human",
-      typingAt: user.typingAt,
-      connected: true,
-      lastSeen: now,
-    });
-  });
-
-  for (const peer of previous) {
-    if (seen.has(peer.clientID)) continue;
-    if (now - peer.lastSeen > PRESENCE_LINGER_MS) continue;
-    next.push({ ...peer, connected: false, typingAt: undefined });
-  }
-
-  return next.sort((a, b) => Number(b.connected) - Number(a.connected) || a.name.localeCompare(b.name));
-}
-
-function samePeerList(a: PresencePeer[], b: PresencePeer[]) {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i].clientID !== b[i].clientID || a[i].color !== b[i].color || a[i].name !== b[i].name) {
-      return false;
-    }
-  }
-  return true;
-}
-
 function OffScreenCursorIndicators({
   above,
   below,
@@ -2020,88 +1854,11 @@ function PresenceDock({
   );
 }
 
-function presenceInitial(peer: PresencePeer) {
-  if (peer.actor === "guest") return "G";
-  return peer.name.trim().charAt(0).toUpperCase() || "U";
-}
-
-function presenceStatus(peer: PresencePeer) {
-  const typing = peer.typingAt && Date.now() - peer.typingAt <= TYPING_FRESHNESS_MS;
-  if (!peer.connected) return "Left just now";
-  if (typing) return "Typing now";
-  return "Viewing";
-}
-
 function snapshotChangeSummary(snapshot: SnapshotSummary) {
   const noun = snapshot.update_count === 1 ? "update" : "updates";
   if (snapshot.update_count <= 0) return `0 ${noun}`;
   if (snapshot.update_start_seq === snapshot.last_seq) return `1 ${noun} · seq ${snapshot.last_seq}`;
   return `${snapshot.update_count} ${noun} · seq ${snapshot.update_start_seq}-${snapshot.last_seq}`;
-}
-
-type DiffLine = {
-  kind: "same" | "added" | "removed";
-  text: string;
-  beforeLine?: number;
-  afterLine?: number;
-};
-
-type LineDiff = {
-  lines: DiffLine[];
-  truncated: boolean;
-};
-
-function buildLineDiff(before: string, after: string): LineDiff {
-  const beforeLines = splitLines(before);
-  const afterLines = splitLines(after);
-  if (beforeLines.length * afterLines.length > 120000) {
-    return { lines: [], truncated: true };
-  }
-
-  const rows = beforeLines.length + 1;
-  const cols = afterLines.length + 1;
-  const table = Array.from({ length: rows }, () => Array<number>(cols).fill(0));
-  for (let i = beforeLines.length - 1; i >= 0; i--) {
-    for (let j = afterLines.length - 1; j >= 0; j--) {
-      table[i][j] =
-        beforeLines[i] === afterLines[j] ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1]);
-    }
-  }
-
-  const lines: DiffLine[] = [];
-  let i = 0;
-  let j = 0;
-  let beforeLine = 1;
-  let afterLine = 1;
-  while (i < beforeLines.length && j < afterLines.length) {
-    if (beforeLines[i] === afterLines[j]) {
-      lines.push({ kind: "same", text: beforeLines[i], beforeLine, afterLine });
-      i++;
-      j++;
-      beforeLine++;
-      afterLine++;
-    } else if (table[i + 1][j] >= table[i][j + 1]) {
-      lines.push({ kind: "removed", text: beforeLines[i], beforeLine });
-      i++;
-      beforeLine++;
-    } else {
-      lines.push({ kind: "added", text: afterLines[j], afterLine });
-      j++;
-      afterLine++;
-    }
-  }
-  for (; i < beforeLines.length; i++, beforeLine++) {
-    lines.push({ kind: "removed", text: beforeLines[i], beforeLine });
-  }
-  for (; j < afterLines.length; j++, afterLine++) {
-    lines.push({ kind: "added", text: afterLines[j], afterLine });
-  }
-  return { lines, truncated: false };
-}
-
-function splitLines(value: string) {
-  if (value.length === 0) return [];
-  return value.split(/\r?\n/);
 }
 
 function SnapshotDiffView({ diff, onShowSnapshot }: { diff: LineDiff; onShowSnapshot: () => void }) {
@@ -2442,119 +2199,6 @@ function publishIconClass(state: "idle" | "saving" | "saved" | "error") {
   if (state === "error") return "text-red-600 dark:text-red-400";
   if (state === "saving") return "animate-pulse text-neutral-600 dark:text-neutral-300";
   return "";
-}
-
-function previewElementForLine(container: HTMLElement, line: number) {
-  const elements = Array.from(container.querySelectorAll<HTMLElement>("[data-line]"));
-  let previous: HTMLElement | null = null;
-  for (const el of elements) {
-    const sourceLine = Number(el.dataset.line);
-    if (!Number.isFinite(sourceLine)) continue;
-    if (sourceLine === line) return el;
-    if (sourceLine > line) return previous ?? el;
-    previous = el;
-  }
-  return previous;
-}
-
-function scrollPreviewToLine(container: HTMLElement | null, line: number) {
-  if (!container) return;
-  const target = previewElementForLine(container, line);
-  if (!target) return;
-  const targetRect = target.getBoundingClientRect();
-  const containerRect = container.getBoundingClientRect();
-  const top = targetRect.top - containerRect.top + container.scrollTop - container.clientHeight * 0.35;
-  container.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
-}
-
-function clearPreviewCommentHighlight(container: HTMLElement | null) {
-  if (!container) return;
-  for (const el of container.querySelectorAll<HTMLElement>("[data-source-text]")) {
-    el.textContent = el.dataset.sourceText ?? "";
-  }
-}
-
-function highlightPreviewCommentRange(container: HTMLElement | null, anchor: ResolvedCommentAnchor | null) {
-  if (!container || anchor?.from === null || anchor?.from === undefined) return;
-  const start = anchor.from;
-  const end = anchor.to ?? anchor.from;
-  const spans = Array.from(container.querySelectorAll<HTMLElement>("[data-source-start][data-source-end]"));
-  let marked = false;
-  for (const span of spans) {
-    const spanStart = Number(span.dataset.sourceStart);
-    const spanEnd = Number(span.dataset.sourceEnd);
-    const sourceText = span.dataset.sourceText ?? span.textContent ?? "";
-    if (!Number.isFinite(spanStart) || !Number.isFinite(spanEnd)) continue;
-    let overlapStart = Math.max(start, spanStart);
-    let overlapEnd = Math.min(end, spanEnd);
-    if (end <= start) {
-      if (!(spanStart <= start && spanEnd > start)) continue;
-      overlapStart = start;
-      overlapEnd = Math.min(spanEnd, start + 1);
-    } else if (!(spanStart < end && spanEnd > start)) {
-      continue;
-    }
-    const localStart = Math.max(0, overlapStart - spanStart);
-    const localEnd = Math.max(localStart, Math.min(sourceText.length, overlapEnd - spanStart));
-    if (localEnd <= localStart) continue;
-    span.replaceChildren();
-    if (localStart > 0) span.append(document.createTextNode(sourceText.slice(0, localStart)));
-    const mark = document.createElement("span");
-    mark.className = "preview-comment-hl";
-    mark.textContent = sourceText.slice(localStart, localEnd);
-    span.append(mark);
-    if (localEnd < sourceText.length) span.append(document.createTextNode(sourceText.slice(localEnd)));
-    marked = true;
-  }
-  if (!marked && anchor.line) {
-    previewElementForLine(container, anchor.line)?.classList.add("preview-comment-hl");
-  }
-}
-
-function applyCommentHighlight(
-  editor: Monaco.editor.IStandaloneCodeEditor,
-  monaco: typeof Monaco | null,
-  collectionRef: React.MutableRefObject<Monaco.editor.IEditorDecorationsCollection | null>,
-  anchor: ResolvedCommentAnchor | null,
-  scroll: boolean,
-) {
-  const model = editor.getModel();
-  if (!monaco || !model || !collectionRef.current) return;
-  if (!anchor?.line) {
-    collectionRef.current.set([]);
-    return;
-  }
-  const start = anchor.from ?? model.getOffsetAt({ lineNumber: Math.max(1, anchor.line), column: 1 });
-  const end = anchor.to !== null && anchor.to > start ? anchor.to : Math.min(model.getValueLength(), start + 1);
-  const startPos = model.getPositionAt(start);
-  const endPos = model.getPositionAt(end);
-  const range = new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column);
-  collectionRef.current.set([{
-    range,
-    options: { inlineClassName: "monaco-comment-range-hl" },
-  }]);
-  if (!scroll) return;
-  const layout = editor.getLayoutInfo();
-  const targetTop = editor.getTopForLineNumber(startPos.lineNumber) - layout.height / 2;
-  smoothScrollEditor(editor, Math.max(0, targetTop));
-}
-
-function smoothScrollEditor(editor: Monaco.editor.IStandaloneCodeEditor, target: number) {
-  const start = editor.getScrollTop();
-  const distance = target - start;
-  if (Math.abs(distance) < 2) {
-    editor.setScrollTop(target);
-    return;
-  }
-  const duration = Math.min(700, 250 + Math.abs(distance) * 0.4);
-  const t0 = performance.now();
-  const ease = (t: number) => 1 - Math.pow(1 - t, 3);
-  const step = (now: number) => {
-    const t = Math.min(1, (now - t0) / duration);
-    editor.setScrollTop(start + distance * ease(t));
-    if (t < 1) requestAnimationFrame(step);
-  };
-  requestAnimationFrame(step);
 }
 
 type AssetUploadOpts = {
