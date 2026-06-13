@@ -6,25 +6,28 @@ Read `plan.md` for the full blueprint. Read this file for working norms.
 
 ```
 apps/web/      Next.js 16, App Router, TS, Tailwind 4
-apps/api/      Go 1.26 backend (chi REST + Gorilla WS + k_yrs_go)
-packages/proto/ Shared wire constants (TS) imported by web
+apps/api/      Go 1.26 backend (chi REST + Gorilla WS custom Yjs relay)
+packages/client/  @syncscribe/client — WS sync + attribution SDK (TS)
+packages/proto/   Shared wire constants (TS) imported by web + client
 infra/dex/     Local-dev OIDC IdP config
 ```
+
+For the full architecture and command reference, see `CLAUDE.md` — it is kept current; this file is the short working-norms companion.
 
 ## Conventions
 
 - **TypeScript:** strict mode on. No `any`. Path alias `@/*` → `app/*`.
 - **Go:** stdlib-first. `internal/` for non-exported packages. Errors wrapped with `fmt.Errorf("...: %w", err)`.
-- **Migrations:** numbered SQL in `apps/api/migrations/NNNN_name.{up,down}.sql`. Never edit a landed migration.
+- **Migrations:** goose single-file SQL in `apps/api/migrations/NNNNN_name.sql` (`-- +goose Up` / `-- +goose Down`). Never edit a landed migration.
 - **No comments unless the WHY is non-obvious.** Identifier names should carry the WHAT.
 - **Don't `pnpm install` or `go mod download` proactively** — those are heavy and the user runs them via `make install`.
 
 ## Tech decisions (already made — don't re-litigate)
 
-- Yjs server: `k_yrs_go`. Hocuspocus is the documented M3-spike fallback.
+- Yjs server: custom Go relay in `internal/sync` (PLAN.md P1.1, Option A). No `k_yrs_go`.
 - IAM: standard OIDC against the user's existing authorization server. Dex is the local-dev IdP only.
 - `users.id` is `TEXT` (OIDC `sub`), not UUID.
-- WS framing follows `y-protocols` varint — no custom byte tag.
+- WS framing: stock `y-protocols` varint, single subprotocol `syncscribe.yjs.v1`. The legacy tagged transport was removed — no custom byte tag.
 
 ## Skill routing
 

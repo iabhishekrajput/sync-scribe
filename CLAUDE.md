@@ -12,8 +12,8 @@ All day-to-day work goes through the Makefile (it auto-loads `.env`):
 - `make migrate` — apply goose migrations (`migrate-status`, `migrate-down`, `migrate-reset` also exist).
 - `make seed` — demo document + public `/p/<token>` link.
 - `make dev` — web (:3000) + api (:8080) concurrently; `make web` / `make api` individually.
-- `make test` — `pnpm -r test` + `go test ./...`. `make lint`, `make typecheck` similarly fan out.
-- Single Go test: `cd apps/api && go test ./internal/sync -run TestName`. Real test coverage lives on the Go side; the TS packages' `test` scripts are placeholders.
+- `make test` — `pnpm -r test` (vitest in `packages/client` and `apps/web`) + `go test ./...`. `make test-db` adds the Postgres-backed store tests. `make lint`, `make typecheck` similarly fan out.
+- Single Go test: `cd apps/api && go test ./internal/sync -run TestName`. Single TS suite: `pnpm --filter @syncscribe/client test`.
 - Single workspace: `pnpm --filter web typecheck` (web's typecheck runs `next typegen` first — needed after route changes).
 
 ## Repo layout
@@ -30,15 +30,17 @@ load-tests/    k6-style load scripts
 
 ## Architecture
 
-**Realtime sync path** (`apps/api/internal/sync`): `Hub` keeps an in-process registry of per-document sessions — lazily created on first connect, idle-shutdown after last disconnect. Persistence is an append-only Yjs update log in Postgres (`store.AppendUpdate`/`LoadUpdates`, with `origin_user` per update — this is the provenance substrate). Fresh connections replay the stored log, then get SYNC_COMPLETE; each persisted update from a conn is ACKed back to drive the client's "Saving / Saved" indicator. Multi-node fan-out goes through the `Broker` interface (Valkey pub-sub on `sync:doc:{id}`), enabled when `REDIS_URL` is set; nil broker = single-node mode.
+**Realtime sync path** (`apps/api/internal/sync`): `Hub` keeps an in-process registry of per-document sessions — lazily created on first connect, idle-shutdown after last disconnect. Persistence is an append-only Yjs update log in Postgres (`store.AppendUpdate`/`LoadUpdates`, with `origin_user` per update — this is the provenance substrate). On connect the server replays the stored log as SyncUpdate frames, then sends its own SyncStep1, then Readonly if the conn can't write — a client that observes the server's SyncStep1 is caught up. Each persisted update from a conn is ACKed back to drive the client's "Saving / Saved" indicator. Multi-node fan-out goes through the `Broker` interface (Valkey pub-sub on `sync:doc:{id}`), enabled when `REDIS_URL` is set; nil broker = single-node mode.
 
-**Two WS subprotocols** coexist during the migration window (negotiated via `Sec-WebSocket-Protocol`): legacy `syncscribe.v1` (1-byte tag frames) and target `syncscribe.yjs.v1` (stock `y-protocols` varint framing, plus Readonly/Ack extension message types). Wire constants are defined twice — `packages/proto/src/index.ts` (TS) and `apps/api/internal/sync/protocol.go` (Go) — change both together. WS auth happens inside the sync handler via the subprotocol channel, not the REST bearer middleware.
+**One WS subprotocol**, `syncscribe.yjs.v1`: stock `y-protocols` varint framing plus SyncScribe extension messages MsgReadonly (4) and MsgAck (5). Clients that don't negotiate it are refused with close code 4002. Wire constants are defined twice — `packages/proto/src/index.ts` (TS) and `apps/api/internal/sync/protocol.go` (Go) — change both together. WS auth happens inside the sync handler via the subprotocol channel (token rides as the second protocol entry), not the REST bearer middleware. The server validates-and-discards client SyncStep2 (a stock y-protocols client with offline state loses it); first-party clients resend from their outbox instead. The legacy `syncscribe.v1` tagged transport was removed (PLAN.md P3.3, landed early).
 
 **REST** (`apps/api/internal/server`): chi routes under `/api` behind OIDC bearer middleware plus a lazy user-upsert middleware (`ensureUser`) — handlers may assume the `users` row exists. Handlers are thin wrappers over `internal/store` (pgx, no ORM). Unauthenticated surface: `/share/{token}` (token is the secret), `/auth/*`, health endpoints, `/metrics` (Prometheus).
 
 **Auth flow** (`apps/api/internal/auth` + `apps/web/app/lib/auth.ts`): backend-driven OIDC code+PKCE; refresh token lives in an encrypted cookie, the SPA keeps a short-lived access token in memory only and renews via `POST /auth/refresh`. `OIDC_CLIENT_SECRET` empty = public PKCE client.
 
-**Frontend** (`apps/web/app`): all API calls go through the typed fetch wrapper in `lib/api.ts`. Editor is Monaco + y-monaco, wired to `@syncscribe/client` via `lib/yjs.ts`. Key routes: `/d/[id]` (authed editor), `/p/[token]` (public share), `/invites/[token]`.
+**Frontend** (`apps/web/app`): API calls go through domain modules under `lib/api/` (documents, access, snapshots, comments, assets, share, activity) sharing one authed-fetch `core`; `lib/api.ts` is a barrel re-export. Editor is Monaco + y-monaco; `lib/yjs.ts` is a thin adapter over `@syncscribe/client`'s `SyncClient` (the one sync engine — debounce, SaveState, reconnect, token refresh all live in the SDK). The 3,000-line editor page is decomposed into `app/d/[id]/components/` (self-owning modals) plus pure helpers in `lib/` (lineDiff, commentAnchors, previewHighlight, presence). Key routes: `/d/[id]` (authed editor), `/p/[token]` (public share), `/invites/[token]`.
+
+**SDK** (`packages/client`): modular — codec, sync-client, api-client, blame, colors, events, urls, types. `SyncClient` owns reconnect/backoff, update debounce, SaveState accounting, and a `getToken` callback re-evaluated per connect. Vitest covers codec round-trips (checked against the Go encoder), blame, SSE parsing, and reconnect/save-state characterization against a fake WebSocket. `make test-db` runs the `TEST_DATABASE_URL`-gated Go store tests (goose-migrated, truncate-isolated, skip cleanly without Postgres).
 
 ## Conventions
 
@@ -53,7 +55,7 @@ load-tests/    k6-style load scripts
 - Yjs server: custom Go relay in `internal/sync` (PLAN.md P1.1, Option A). The `k_yrs_go` persistence sidecar is deferred indefinitely — revisit only if compaction-driven latency is measurable.
 - IAM: standard OIDC against the user's existing authorization server. Dex is the local-dev IdP only.
 - `users.id` is `TEXT` (OIDC `sub`), not UUID.
-- WS target framing: stock `y-protocols` varint (`syncscribe.yjs.v1`). The tagged `syncscribe.v1` transport exists only for the migration window — don't extend it.
+- WS framing: stock `y-protocols` varint, single subprotocol `syncscribe.yjs.v1`. The legacy `syncscribe.v1` tagged transport is gone — don't reintroduce a custom byte tag.
 
 ## Skill routing
 

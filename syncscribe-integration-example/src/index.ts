@@ -3,7 +3,6 @@ import { Awareness } from "y-protocols/awareness";
 import {
   SyncClient,
   SyncScribeApiClient,
-  buildSyncProtocols,
   buildSyncUrl,
   compressBlame,
   computeBlame,
@@ -23,14 +22,26 @@ awareness.setLocalStateField("user", {
 });
 
 const ready = deferred<void>();
+const saved = deferred<void>();
 const sync = new SyncClient({
   url: buildSyncUrl(wsBaseUrl, documentId),
-  protocols: buildSyncProtocols(accessToken),
+  // getToken is re-evaluated on every (re)connect, so a refreshed bearer is
+  // picked up automatically on reconnect. A static token works too.
+  getToken: async () => accessToken,
   doc,
   awareness,
   onStateChange(state) {
     console.log("state:", state);
     if (state === "live") ready.resolve();
+  },
+  // SaveState collapses the ACK stream into saved / saving / offline — the
+  // same signal the web app drives its "Saving…/Saved" indicator from.
+  onSaveState(state) {
+    console.log("save:", state);
+    if (state === "saved") saved.resolve();
+  },
+  onDisconnectReason(reason, level) {
+    console.log(`disconnect (${level}):`, reason);
   },
 });
 
@@ -39,7 +50,9 @@ await ready.promise;
 const text = doc.getText("content");
 text.insert(text.length, `\nIntegration example touched this doc at ${new Date().toISOString()}\n`);
 
-await delay(1500);
+// Wait for the server to durably persist the edit (Ack -> SaveState "saved")
+// instead of a blind sleep.
+await Promise.race([saved.promise, delay(5000)]);
 
 const api = new SyncScribeApiClient(apiBaseUrl, accessToken);
 const attribution = await api.getAttribution(documentId, { sinceUpdateId: 0, limit: 20 });
