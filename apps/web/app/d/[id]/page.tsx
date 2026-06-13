@@ -1,7 +1,6 @@
 "use client";
 
-import React, { type ReactNode, useEffect, useEffectEvent, useMemo, useRef, useState, use } from "react";
-import Link from "next/link";
+import React, { useEffect, useEffectEvent, useMemo, useRef, useState, use } from "react";
 import { useRouter } from "next/navigation";
 import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness";
@@ -9,6 +8,10 @@ import type * as Monaco from "monaco-editor";
 import { Group as PanelGroup, Panel, Separator as PanelResizeHandle } from "react-resizable-panels";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { toast } from "sonner";
+import dynamic from "next/dynamic";
+import { computeBlame } from "@syncscribe/client";
+
 import {
   markdownComponents,
   rehypeSourceTextSpans,
@@ -16,31 +19,19 @@ import {
 } from "../../lib/markdown";
 import {
   api,
-  type ActivityEvent,
-  type AccessRequest,
   type AttributionUpdate,
-  type CreateCommentAnchor,
   type Document,
-  type DocumentAccess,
   type DocumentComment,
-  type Invite,
-  type SnapshotBody,
-  type SnapshotSummary,
 } from "../../lib/api";
-import { fetchMe, getAccessToken, loginURL, type Me } from "../../lib/auth";
+import { fetchMe, type Me } from "../../lib/auth";
 import { colorForUser } from "../../lib/avatar";
-import { computeBlame } from "@syncscribe/client";
 import {
   buildCommentAnchorDraft,
   resolveCommentAnchor,
   type CommentAnchorDraft,
-  type ResolvedCommentAnchor,
 } from "../../lib/commentAnchors";
-import { buildLineDiff, type LineDiff } from "../../lib/lineDiff";
 import {
   collectPresencePeers,
-  presenceInitial,
-  presenceStatus,
   samePeerList,
   type PresencePeer,
 } from "../../lib/presence";
@@ -51,44 +42,47 @@ import {
   scrollPreviewToLine,
 } from "../../lib/previewHighlight";
 import { ApiError, notifyError } from "../../lib/errors";
-import { toast } from "sonner";
-import { TopBar } from "../../components/TopBar";
 import { SyncProvider, type ConnectionState, type SaveState } from "../../lib/yjs";
-import { ShareLinksPanel } from "../../components/ShareLinksPanel";
+import { makeTypingStamper } from "../../lib/typing";
+import { TopBar } from "../../components/TopBar";
 import { TypingPill } from "../../components/TypingPill";
-import { makeTypingStamper, TYPING_FRESHNESS_MS } from "../../lib/typing";
 import { Modal } from "../../components/Modal";
-import dynamic from "next/dynamic";
-const YjsMonacoEditor = dynamic(
-  () => import("../../components/YjsMonacoEditor").then((m) => m.YjsMonacoEditor),
-  { ssr: false },
-);
 import {
   BlameIcon,
-  CloudOffIcon,
   CloudUpIcon,
-  CheckIcon,
   DownloadIcon,
   GripVerticalIcon,
   HistoryIcon,
   MessageSquareIcon,
-  MenuIcon,
   PrinterIcon,
   ShareIcon,
   SpinnerIcon,
 } from "../../components/icons";
+import { CommentsPanel, CommentInputPopup, EditorContextMenu } from "./components/CommentsPanel";
+import { DocumentSidebar } from "./components/DocumentSidebar";
+import { AuthedImg, uploadAndInsertImagesMonaco } from "./components/EditorAssets";
+import { ExportModal } from "./components/ExportModal";
+import { HistoryModal } from "./components/HistoryPanel";
+import { OffScreenCursorIndicators, PresenceDock } from "./components/PresenceDock";
+import { ShareModal } from "./components/ShareModal";
+import {
+  IconBtn,
+  MobileActionsMenu,
+  publishIconClass,
+  ServerSaveStatus,
+  type PublishState,
+} from "./components/TopBarActions";
 
-type InviteRole = "viewer" | "editor";
+const YjsMonacoEditor = dynamic(
+  () => import("../../components/YjsMonacoEditor").then((m) => m.YjsMonacoEditor),
+  { ssr: false },
+);
+
 type AccessRole = "viewer" | "editor" | "owner";
 type CommentDeleteTarget = {
   id: string;
   label: string;
 };
-type ExportStatus =
-  | { state: "loading" }
-  | { state: "none" }
-  | { state: "current"; version: number; createdAt: string }
-  | { state: "stale"; version: number; createdAt: string };
 
 const DOCUMENT_TITLE_MAX_CHARS = 80;
 
@@ -115,6 +109,11 @@ function buildBlameMap(updates: AttributionUpdate[]): BlameMap {
       createdAt: mark.createdAt,
     };
   });
+}
+
+function blameColorToken(color: string) {
+  const token = color.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return token || "neutral";
 }
 
 function limitDocumentTitle(title: string) {
@@ -144,18 +143,8 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const [serverSaveState, setServerSaveState] = useState<SaveState>("saving");
   const [shareOpen, setShareOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
-  const [exportStatus, setExportStatus] = useState<ExportStatus>({ state: "loading" });
-  const [exportBusy, setExportBusy] = useState<"markdown" | "publish-markdown" | "pdf" | "">("");
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<InviteRole>("editor");
-  const [inviteState, setInviteState] = useState<"idle" | "sending" | "sent" | "error">("idle");
-  const [accessList, setAccessList] = useState<DocumentAccess[]>([]);
-  const [pendingInvites, setPendingInvites] = useState<Invite[]>([]);
-  const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([]);
-  const [accessLoading, setAccessLoading] = useState(false);
-  const [accessBusyUserID, setAccessBusyUserID] = useState("");
-  const [accessRequestState, setAccessRequestState] = useState<"idle" | "sending" | "sent" | "error">("idle");
-  const [accessRequestBusyID, setAccessRequestBusyID] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [publishState, setPublishState] = useState<PublishState>("idle");
   const [presencePeers, setPresencePeers] = useState<PresencePeer[]>([]);
   const [presenceDockOpen, setPresenceDockOpen] = useState(true);
   const [blameActive, setBlameActive] = useState(false);
@@ -169,52 +158,17 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const [selectedCommentId, setSelectedCommentId] = useState<string | null>(null);
   const [pendingCommentDelete, setPendingCommentDelete] = useState<CommentDeleteTarget | null>(null);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [snapshots, setSnapshots] = useState<SnapshotSummary[]>([]);
-  const [selectedSnapshot, setSelectedSnapshot] = useState(0);
-  const [snapshotBody, setSnapshotBody] = useState<SnapshotBody | null>(null);
-  const [historyView, setHistoryView] = useState<"preview" | "diff">("diff");
-  const [restoring, setRestoring] = useState(false);
-  const [publishState, setPublishState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [mobileTab, setMobileTab] = useState<"editor" | "preview">("editor");
+  const [aboveCursors, setAboveCursors] = useState<PresencePeer[]>([]);
+  const [belowCursors, setBelowCursors] = useState<PresencePeer[]>([]);
+  const [editorReady, setEditorReady] = useState(false);
+  const [draggingAsset, setDraggingAsset] = useState(false);
   const isOwner = !!me && me.id === ownerID;
   const [{ ydoc, awareness }] = useState(() => {
     const doc = new Y.Doc();
     return { ydoc: doc, awareness: new Awareness(doc) };
   });
   const ytext = ydoc.getText("content");
-
-  async function refreshAccessList() {
-    if (!isOwner) return;
-    setAccessLoading(true);
-    try {
-      const access = await api.listAccess(id);
-      setAccessList(access);
-      setPendingInvites(await api.listInvites(id));
-      setAccessRequests(await api.listAccessRequests(id));
-    } catch (err) {
-      notifyError(err, "list-access");
-    } finally {
-      setAccessLoading(false);
-    }
-  }
-
-  const refreshAccessListOnOpen = useEffectEvent(() => {
-    void refreshAccessList();
-  });
-
-  useEffect(() => {
-    if (!shareOpen || !isOwner) return;
-    const timer = window.setTimeout(() => {
-      refreshAccessListOnOpen();
-    }, 0);
-    return () => window.clearTimeout(timer);
-  }, [isOwner, shareOpen]);
-
-  const [aboveCursors, setAboveCursors] = useState<PresencePeer[]>([]);
-  const [belowCursors, setBelowCursors] = useState<PresencePeer[]>([]);
-  const [editorReady, setEditorReady] = useState(false);
 
   const providerRef = useRef<SyncProvider | null>(null);
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
@@ -439,91 +393,6 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     }
   }
 
-  async function sendInvite() {
-    const email = inviteEmail.trim();
-    if (!email) return;
-    setInviteState("sending");
-    try {
-      await api.createInvite(id, email, inviteRole);
-      setInviteEmail("");
-      setInviteState("sent");
-      await refreshAccessList();
-    } catch (err) {
-      notifyError(err, "send-invite");
-      setInviteState("error");
-    }
-  }
-
-  async function revokeInvite(token: string) {
-    try {
-      await api.revokeInvite(id, token);
-      setPendingInvites((prev) => prev.filter((invite) => invite.token !== token));
-    } catch (err) {
-      notifyError(err, "revoke-invite");
-    }
-  }
-
-  async function resendInvite(token: string) {
-    try {
-      const invite = await api.resendInvite(id, token);
-      setPendingInvites((prev) => [invite, ...prev.filter((item) => item.token !== token)]);
-    } catch (err) {
-      notifyError(err, "resend-invite");
-    }
-  }
-
-  async function updateAccessRole(access: DocumentAccess, role: AccessRole) {
-    setAccessBusyUserID(access.user_id);
-    try {
-      const updated = await api.upsertAccess(id, access.user_id, role);
-      setAccessList((prev) => prev.map((item) => (item.user_id === access.user_id ? { ...item, ...updated } : item)));
-    } catch (err) {
-      notifyError(err, "update-access");
-    } finally {
-      setAccessBusyUserID("");
-    }
-  }
-
-  async function revokeAccess(access: DocumentAccess) {
-    setAccessBusyUserID(access.user_id);
-    try {
-      await api.deleteAccess(id, access.user_id);
-      setAccessList((prev) => prev.filter((item) => item.user_id !== access.user_id));
-    } catch (err) {
-      notifyError(err, "revoke-access");
-    } finally {
-      setAccessBusyUserID("");
-    }
-  }
-
-  async function requestEditAccess() {
-    setAccessRequestState("sending");
-    try {
-      await api.requestAccess(id, "editor");
-      setAccessRequestState("sent");
-    } catch (err) {
-      notifyError(err, "request-edit-access");
-      setAccessRequestState("error");
-    }
-  }
-
-  async function resolveAccessRequest(request: AccessRequest, decision: "approved" | "denied") {
-    setAccessRequestBusyID(request.id);
-    try {
-      if (decision === "approved") {
-        await api.approveAccessRequest(id, request.id);
-      } else {
-        await api.denyAccessRequest(id, request.id);
-      }
-      setAccessRequests((prev) => prev.filter((item) => item.id !== request.id));
-      if (decision === "approved") await refreshAccessList();
-    } catch (err) {
-      notifyError(err, "resolve-access-request");
-    } finally {
-      setAccessRequestBusyID("");
-    }
-  }
-
   function toggleCommentsPanel() {
     const opening = !commentsPanelOpen;
     setCommentsPanelOpen(opening);
@@ -691,36 +560,6 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     window.print();
   }
 
-  async function openExport() {
-    setExportOpen(true);
-    await refreshExportStatus();
-  }
-
-  async function refreshExportStatus() {
-    setExportStatus({ state: "loading" });
-    try {
-      const list = await api.listSnapshots(id);
-      const latest = list.at(-1);
-      if (!latest) {
-        setExportStatus({ state: "none" });
-        return;
-      }
-      const body = await api.getSnapshot(id, latest.version);
-      if (!body.can_preview) {
-        setExportStatus({ state: "stale", version: latest.version, createdAt: latest.created_at });
-        return;
-      }
-      setExportStatus({
-        state: body.body === ytext.toString() ? "current" : "stale",
-        version: latest.version,
-        createdAt: latest.created_at,
-      });
-    } catch (err) {
-      notifyError(err, "export-status");
-      setExportStatus({ state: "none" });
-    }
-  }
-
   // Snapshots are the export source — without one, /export?format=md 409s.
   // We expose a manual Publish so users can decide when the markdown view is
   // "good"; a future M-N can flip this to auto-snapshot-on-idle.
@@ -729,9 +568,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     setPublishState("saving");
     try {
       await api.publishSnapshot(id, body);
-      setPublishState("saved");
-      if (exportOpen) void refreshExportStatus();
-      setTimeout(() => setPublishState((s) => (s === "saved" ? "idle" : s)), 1800);
+      flashPublishState("saved");
     } catch (err) {
       notifyError(err, "publish-snapshot");
       setPublishState("error");
@@ -739,85 +576,9 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     }
   }
 
-  async function exportMarkdown(publishFirst = false) {
-    const token = await getAccessToken();
-    if (!token) {
-      window.location.href = loginURL(`/d/${id}`);
-      return;
-    }
-    setExportBusy(publishFirst ? "publish-markdown" : "markdown");
-    const doExport = async () =>
-      fetch(api.exportMarkdownURL(id), {
-        headers: { Authorization: `Bearer ${token}` },
-        credentials: "include",
-      });
-    if (publishFirst) {
-      try {
-        await api.publishSnapshot(id, ytext.toString());
-        setPublishState("saved");
-        setTimeout(() => setPublishState((s) => (s === "saved" ? "idle" : s)), 1800);
-      } catch (err) {
-        setExportBusy("");
-        notifyError(err, "publish-before-export");
-        return;
-      }
-    }
-    let res = await doExport();
-    if (res.status === 409) {
-      try {
-        await api.publishSnapshot(id, ytext.toString());
-        res = await doExport();
-      } catch {
-        // fall through to the error branch
-      }
-    }
-    if (!res.ok) {
-      setExportBusy("");
-      notifyError(new ApiError(res.status, "Could not export Markdown."), "export-markdown");
-      return;
-    }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    const disposition = res.headers.get("content-disposition") ?? "";
-    a.href = url;
-    a.download = filenameFromDisposition(disposition) || `${title || "Untitled"}.md`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-    setExportBusy("");
-    if (exportOpen) void refreshExportStatus();
-  }
-
-  function exportPDF() {
-    setExportBusy("pdf");
-    setExportOpen(false);
-    window.setTimeout(() => {
-      window.print();
-      setExportBusy("");
-    }, 50);
-  }
-
-  async function openHistory() {
-    setHistoryOpen(true);
-    setHistoryLoading(true);
-    try {
-      const list = await api.listSnapshots(id);
-      setSnapshots(list);
-      const nextIndex = Math.max(list.length - 1, 0);
-      setSelectedSnapshot(nextIndex);
-      setHistoryView("diff");
-      if (list[nextIndex]) {
-        setSnapshotBody(await api.getSnapshot(id, list[nextIndex].version));
-      } else {
-        setSnapshotBody(null);
-      }
-    } catch (err) {
-      notifyError(err, "open-history");
-    } finally {
-      setHistoryLoading(false);
-    }
+  function flashPublishState(state: "saved") {
+    setPublishState(state);
+    setTimeout(() => setPublishState((s) => (s === "saved" ? "idle" : s)), 1800);
   }
 
   async function toggleBlame() {
@@ -840,40 +601,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
     }
   }
 
-  async function chooseSnapshot(index: number) {
-    setSelectedSnapshot(index);
-    setSnapshotBody(null);
-    const snap = snapshots[index];
-    if (!snap) return;
-    try {
-      setSnapshotBody(await api.getSnapshot(id, snap.version));
-    } catch (err) {
-      notifyError(err, "load-snapshot");
-    }
-  }
-
-  async function restoreSelectedSnapshot() {
-    const snap = snapshots[selectedSnapshot];
-    if (!snap) return;
-    const ok = confirm(
-      `Restore version ${snap.version}? This creates a new head snapshot and keeps the current history intact.`,
-    );
-    if (!ok) return;
-    setRestoring(true);
-    try {
-      const res = await api.restoreSnapshot(id, snap.version);
-      setTitle(limitDocumentTitle(res.document.title));
-      setTitleDraft(limitDocumentTitle(res.document.title));
-      setHistoryOpen(false);
-    } catch (err) {
-      notifyError(err, "restore-snapshot");
-    } finally {
-      setRestoring(false);
-    }
-  }
-
   const canUpload = connState !== "readonly";
-  const [draggingAsset, setDraggingAsset] = useState(false);
   const reportUploadError = (msg: string) => notifyError(new ApiError(0, msg), "upload-asset");
 
   const mdComponents = useMemo<Components>(
@@ -888,13 +616,6 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
       ),
     }),
     [id],
-  );
-
-  const selectedSnapshotSummary = snapshots[selectedSnapshot];
-  const currentBody = previewText;
-  const snapshotDiff = useMemo(
-    () => buildLineDiff(snapshotBody?.can_preview ? snapshotBody.body : "", currentBody),
-    [snapshotBody, currentBody],
   );
 
   useEffect(() => {
@@ -1003,7 +724,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                 <IconBtn onClick={() => setShareOpen(true)} title="Share document">
                   <ShareIcon className="h-[18px] w-[18px]" />
                 </IconBtn>
-                <IconBtn onClick={() => void openExport()} title="Export">
+                <IconBtn onClick={() => setExportOpen(true)} title="Export">
                   <DownloadIcon className="h-[18px] w-[18px]" />
                 </IconBtn>
                 <IconBtn
@@ -1026,7 +747,7 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                 <IconBtn onClick={printPreview} title="Print">
                   <PrinterIcon className="h-[18px] w-[18px]" />
                 </IconBtn>
-                <IconBtn onClick={openHistory} title="Version history">
+                <IconBtn onClick={() => setHistoryOpen(true)} title="Version history">
                   <HistoryIcon className="h-[18px] w-[18px]" />
                 </IconBtn>
                 <IconBtn
@@ -1047,9 +768,9 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
                 publishState={publishState}
                 onPublish={publishSnapshot}
                 onShare={() => setShareOpen(true)}
-                onExport={() => void openExport()}
+                onExport={() => setExportOpen(true)}
                 onPrint={printPreview}
-                onHistory={openHistory}
+                onHistory={() => setHistoryOpen(true)}
                 onReview={toggleCommentsPanel}
               />
             </>
@@ -1306,1352 +1027,32 @@ export default function EditorPage({ params }: { params: Promise<{ id: string }>
           />
         </>
       )}
-      <Modal open={exportOpen} onClose={() => setExportOpen(false)} title="Export" width="max-w-2xl">
-        <div className="space-y-4">
-          <div className="rounded-lg border border-current/10 p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-semibold">Markdown snapshot</h3>
-                <p className="mt-1 text-sm opacity-70">{exportStatusText(exportStatus)}</p>
-              </div>
-              <button
-                onClick={() => void refreshExportStatus()}
-                disabled={exportStatus.state === "loading"}
-                className="rounded-md border border-current/15 px-3 py-1.5 text-sm hover:bg-current/5 disabled:opacity-50"
-              >
-                Refresh
-              </button>
-            </div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button
-                onClick={() => void exportMarkdown(false)}
-                disabled={exportBusy !== "" || exportStatus.state === "none" || exportStatus.state === "loading"}
-                className="rounded-md bg-black px-3 py-2 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-black"
-              >
-                {exportBusy === "markdown" ? "Exporting..." : "Export latest snapshot"}
-              </button>
-              <button
-                onClick={() => void exportMarkdown(true)}
-                disabled={exportBusy !== ""}
-                className="rounded-md border border-current/15 px-3 py-2 text-sm hover:bg-current/5 disabled:opacity-50"
-              >
-                {exportBusy === "publish-markdown" ? "Publishing..." : "Publish current editor and export"}
-              </button>
-            </div>
-          </div>
-          <div className="rounded-lg border border-current/10 p-4">
-            <h3 className="text-sm font-semibold">PDF / print</h3>
-            <p className="mt-1 text-sm opacity-70">
-              Opens the browser print dialog with app chrome hidden, document title metadata, and print-friendly Markdown layout.
-            </p>
-            <button
-              onClick={exportPDF}
-              disabled={exportBusy !== ""}
-              className="mt-4 rounded-md bg-black px-3 py-2 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-black"
-            >
-              {exportBusy === "pdf" ? "Opening..." : "Print or save PDF"}
-            </button>
-          </div>
-        </div>
-      </Modal>
-      <Modal
+      <ExportModal
+        open={exportOpen}
+        onClose={() => setExportOpen(false)}
+        docId={id}
+        title={title}
+        getBody={() => ytext.toString()}
+        onPublishedSnapshot={() => flashPublishState("saved")}
+      />
+      <ShareModal
         open={shareOpen}
-        onClose={() => {
-          setShareOpen(false);
-          setInviteState("idle");
-          setAccessRequestState("idle");
-        }}
-        title="Share document"
-        width="max-w-xl"
-      >
-        {isOwner ? (
-          <>
-            <label className="mb-1 block text-xs opacity-70" htmlFor="invite-email">
-              Share by email
-            </label>
-            <div className="flex gap-2">
-              <input
-                id="invite-email"
-                value={inviteEmail}
-                type="email"
-                onChange={(e) => {
-                  setInviteEmail(e.target.value);
-                  setInviteState("idle");
-                }}
-                className="min-w-0 flex-1 rounded-md border border-current/15 bg-transparent px-3 py-2 text-sm outline-none focus:border-current/40"
-                placeholder="teammate@example.com"
-              />
-              <button
-                onClick={sendInvite}
-                disabled={inviteState === "sending" || !inviteEmail.trim()}
-                className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-              >
-                {inviteState === "sending" ? "Sharing…" : "Share"}
-              </button>
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 rounded-md bg-current/5 p-1">
-              {(["editor", "viewer"] as const).map((role) => (
-                <button
-                  key={role}
-                  onClick={() => setInviteRole(role)}
-                  className={`rounded px-2 py-1.5 text-sm capitalize ${
-                    inviteRole === role ? "bg-white shadow-sm dark:bg-neutral-800" : "opacity-70"
-                  }`}
-                >
-                  {role}
-                </button>
-              ))}
-            </div>
-            {inviteState === "sent" && (
-              <p className="mt-3 text-sm text-emerald-600 dark:text-emerald-400">Access shared.</p>
-            )}
-            {inviteState === "error" && (
-              <p className="mt-3 text-sm text-red-600 dark:text-red-400">Could not share access.</p>
-            )}
-            {accessRequests.length > 0 && (
-              <div className="mt-5 border-t border-current/10 pt-4">
-                <h3 className="mb-2 text-sm font-semibold">Access requests</h3>
-                <ul className="divide-y divide-current/10 rounded-md border border-current/10">
-                  {accessRequests.map((request) => (
-                    <li key={request.id} className="flex items-center gap-3 px-3 py-2 text-sm">
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate font-medium">
-                          {request.requester_name || request.requester_email || request.requester_id}
-                        </p>
-                        <p className="truncate text-xs opacity-60">
-                          Wants {request.requested_role} access · {new Date(request.created_at).toLocaleDateString()}
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => void resolveAccessRequest(request, "approved")}
-                        disabled={accessRequestBusyID === request.id}
-                        className="rounded px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50 dark:text-emerald-300 dark:hover:bg-emerald-950/30"
-                      >
-                        Approve
-                      </button>
-                      <button
-                        onClick={() => void resolveAccessRequest(request, "denied")}
-                        disabled={accessRequestBusyID === request.id}
-                        className="rounded px-2 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50 dark:text-red-400 dark:hover:bg-red-950/30"
-                      >
-                        Deny
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            <div className="mt-5 border-t border-current/10 pt-4">
-              <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-sm font-semibold">People with access</h3>
-                <button onClick={() => void refreshAccessList()} className="text-xs opacity-70 hover:opacity-100">
-                  Refresh
-                </button>
-              </div>
-              {accessLoading ? (
-                <p className="rounded-md border border-current/10 p-3 text-sm opacity-60">Loading access…</p>
-              ) : accessList.length === 0 ? (
-                <p className="rounded-md border border-dashed border-current/20 p-3 text-sm opacity-60">
-                  Only you have access.
-                </p>
-              ) : (
-                <ul className="divide-y divide-current/10 rounded-md border border-current/10">
-                  {accessList.map((access) => (
-                    <li key={access.user_id} className="flex items-center gap-3 px-3 py-2">
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium">
-                          {access.display_name || access.email || access.user_id}
-                        </p>
-                        <p className="truncate text-xs opacity-60">{access.email || access.user_id}</p>
-                      </div>
-                      <select
-                        value={access.role}
-                        disabled={accessBusyUserID === access.user_id}
-                        onChange={(e) => void updateAccessRole(access, e.target.value as AccessRole)}
-                        className="rounded-md border border-current/15 bg-transparent px-2 py-1 text-sm capitalize outline-none focus:border-current/40"
-                      >
-                        <option value="editor">Editor</option>
-                        <option value="viewer">Viewer</option>
-                        <option value="owner">Owner</option>
-                      </select>
-                      <button
-                        onClick={() => void revokeAccess(access)}
-                        disabled={accessBusyUserID === access.user_id}
-                        className="rounded-md px-2 py-1 text-sm text-red-600 hover:bg-red-50 disabled:opacity-50 dark:text-red-400 dark:hover:bg-red-950/30"
-                      >
-                        Revoke
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {pendingInvites.length > 0 && (
-                <div className="mt-4">
-                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide opacity-60">Pending invites</h4>
-                  <ul className="divide-y divide-current/10 rounded-md border border-current/10">
-                    {pendingInvites.map((invite) => (
-                      <li key={invite.token} className="flex items-center gap-3 px-3 py-2 text-sm">
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate font-medium">{invite.email}</p>
-                          <p className="truncate text-xs opacity-60">
-                            {invite.role} · expires {new Date(invite.expires_at).toLocaleDateString()}
-                          </p>
-                        </div>
-                        <button onClick={() => void resendInvite(invite.token)} className="rounded px-2 py-1 text-xs hover:bg-current/5">
-                          Resend
-                        </button>
-                        <button
-                          onClick={() => void revokeInvite(invite.token)}
-                          className="rounded px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30"
-                        >
-                          Cancel
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          </>
-        ) : (
-          <div className="rounded-md border border-current/10 p-3">
-            <p className="text-sm opacity-70">Only the owner can manage document sharing.</p>
-            {documentRole === "viewer" && (
-              <div className="mt-3 flex items-center gap-3">
-                <button
-                  onClick={() => void requestEditAccess()}
-                  disabled={accessRequestState === "sending" || accessRequestState === "sent"}
-                  className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {accessRequestState === "sending" ? "Requesting..." : accessRequestState === "sent" ? "Requested" : "Request edit access"}
-                </button>
-                {accessRequestState === "error" && <span className="text-sm text-red-600 dark:text-red-400">Could not send request.</span>}
-              </div>
-            )}
-          </div>
-        )}
-        <ShareLinksPanel docId={id} isOwner={isOwner} />
-        {isOwner && <ActivityLog docId={id} />}
-      </Modal>
-      <Modal
+        onClose={() => setShareOpen(false)}
+        docId={id}
+        isOwner={isOwner}
+        documentRole={documentRole}
+      />
+      <HistoryModal
         open={historyOpen}
         onClose={() => setHistoryOpen(false)}
-        title="Version history"
-        width="max-w-5xl"
-      >
-        <div>
-          {historyLoading ? (
-                <div className="rounded-lg border border-current/10 p-4">
-                  <div className="mb-3 h-4 w-32 rounded-full bg-current/10" />
-                  <div className="h-24 rounded-md bg-current/10" />
-                </div>
-              ) : snapshots.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-current/20 p-8 text-center">
-                  <p className="text-sm opacity-70">No snapshots have been written yet.</p>
-                </div>
-              ) : (
-                <div className="grid min-h-[28rem] gap-4 md:grid-cols-[17rem_1fr]">
-                  <aside className="min-h-0 overflow-auto rounded-lg border border-current/10">
-                    <div className="sticky top-0 border-b border-current/10 bg-white p-3 dark:bg-neutral-950">
-                      <input
-                        type="range"
-                        min={0}
-                        max={snapshots.length - 1}
-                        value={selectedSnapshot}
-                        onChange={(e) => void chooseSnapshot(Number(e.target.value))}
-                        className="w-full"
-                        aria-label="Select snapshot"
-                      />
-                    </div>
-                    <ol className="divide-y divide-current/10">
-                      {snapshots.map((snapshot, index) => (
-                        <li key={snapshot.version}>
-                          <button
-                            onClick={() => void chooseSnapshot(index)}
-                            className={`w-full px-3 py-3 text-left text-sm hover:bg-current/5 ${
-                              index === selectedSnapshot ? "bg-current/10" : ""
-                            }`}
-                          >
-                            <span className="flex items-center justify-between gap-3">
-                              <span className="font-medium">v{snapshot.version}</span>
-                              <span className="text-xs opacity-60">{formatSnapshotDate(snapshot.created_at)}</span>
-                            </span>
-                            <span className="mt-1 block truncate text-xs opacity-70">
-                              {snapshot.created_by_name || snapshot.created_by || "Unknown author"}
-                            </span>
-                            <span className="mt-2 block text-xs opacity-60">{snapshotChangeSummary(snapshot)}</span>
-                          </button>
-                        </li>
-                      ))}
-                    </ol>
-                  </aside>
-                  <div className="min-w-0 space-y-4">
-                    <SnapshotMeta snapshot={selectedSnapshotSummary} />
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="inline-flex rounded-md border border-current/15 p-0.5 text-sm">
-                        <button
-                          onClick={() => setHistoryView("diff")}
-                          className={`min-w-24 rounded px-3 py-1.5 ${
-                            historyView === "diff" ? "bg-black text-white dark:bg-white dark:text-black" : "hover:bg-current/5"
-                          }`}
-                        >
-                          Diff
-                        </button>
-                        <button
-                          onClick={() => setHistoryView("preview")}
-                          className={`min-w-24 rounded px-3 py-1.5 ${
-                            historyView === "preview" ? "bg-black text-white dark:bg-white dark:text-black" : "hover:bg-current/5"
-                          }`}
-                        >
-                          Snapshot
-                        </button>
-                      </div>
-                      <button
-                        onClick={restoreSelectedSnapshot}
-                        disabled={restoring || connState === "readonly"}
-                        className="rounded-md bg-black px-3 py-2 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-black"
-                      >
-                        {restoring ? "Restoring…" : "Restore as new version"}
-                      </button>
-                    </div>
-                    <div className="rounded-lg border border-current/10">
-                      {!snapshotBody ? (
-                        <div className="p-4 text-sm opacity-70">Loading snapshot…</div>
-                      ) : !snapshotBody.can_preview ? (
-                        <p className="p-4 text-sm opacity-70">
-                          This snapshot is stored as an opaque CRDT blob and cannot be previewed as text yet.
-                        </p>
-                      ) : historyView === "preview" ? (
-                        <pre className="max-h-[26rem] overflow-auto whitespace-pre-wrap p-4 text-sm">{snapshotBody.body}</pre>
-                      ) : (
-                        <SnapshotDiffView diff={snapshotDiff} onShowSnapshot={() => setHistoryView("preview")} />
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-        </div>
-      </Modal>
-    </div>
-  );
-}
-
-function SnapshotMeta({ snapshot }: { snapshot?: SnapshotSummary }) {
-  if (!snapshot) return null;
-  const created = new Date(snapshot.created_at).toLocaleString();
-  const users = snapshot.actor_breakdown.user;
-  const guest = snapshot.actor_breakdown.guest ?? 0;
-  const author = snapshot.created_by_name || snapshot.created_by || "Unknown author";
-  return (
-    <div className="grid gap-3 rounded-lg border border-current/10 p-3 text-sm sm:grid-cols-4">
-      <div>
-        <span className="block text-xs opacity-60">Version</span>
-        <span className="font-medium">v{snapshot.version}</span>
-      </div>
-      <div>
-        <span className="block text-xs opacity-60">Created</span>
-        <span className="font-medium">{created}</span>
-      </div>
-      <div>
-        <span className="block text-xs opacity-60">Published by</span>
-        <span className="font-medium">{author}</span>
-      </div>
-      <div>
-        <span className="block text-xs opacity-60">Changes</span>
-        <span className="font-medium">
-          {users} user{users === 1 ? "" : "s"}{guest ? `, ${guest} guest` : ""}
-        </span>
-        <span className="block text-xs opacity-60">{snapshotChangeSummary(snapshot)}</span>
-      </div>
-    </div>
-  );
-}
-
-function exportStatusText(status: ExportStatus) {
-  switch (status.state) {
-    case "loading":
-      return "Checking the latest published snapshot...";
-    case "none":
-      return "No Markdown snapshot exists yet. Publish the current editor content before exporting.";
-    case "current":
-      return `Current: v${status.version}, published ${new Date(status.createdAt).toLocaleString()}.`;
-    case "stale":
-      return `Stale: export will use v${status.version} from ${new Date(status.createdAt).toLocaleString()}, not unsnapshotted editor changes.`;
-  }
-}
-
-function ActivityLog({ docId }: { docId: string }) {
-  const [events, setEvents] = useState<ActivityEvent[]>([]);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const next = await api.listActivity(docId, 50);
-        if (alive) setEvents(next);
-      } catch {
-        if (alive) setError("Could not load activity.");
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [docId]);
-
-  return (
-    <div className="mt-5 border-t border-current/10 pt-4">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold">Activity log</h3>
-      </div>
-      {events.length === 0 ? (
-        <p className="text-xs opacity-60">{error || "No activity recorded yet."}</p>
-      ) : (
-        <ul className="space-y-2">
-          {events.map((event) => (
-            <li key={event.id} className="rounded-md border border-current/10 px-2 py-1.5 text-xs">
-              <span className="font-medium">{event.actor_label}</span>{" "}
-              <span className="opacity-75">{activityLabel(event)}</span>
-              <span className="block opacity-55">{new Date(event.created_at).toLocaleString()}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-      {error && events.length > 0 && <p className="mt-2 text-xs text-red-600 dark:text-red-400">{error}</p>}
-    </div>
-  );
-}
-
-function activityLabel(event: ActivityEvent) {
-  const labels: Record<string, string> = {
-    "access.granted": "updated document access",
-    "access.revoked": "revoked document access",
-    "snapshot.published": "published a snapshot",
-    "snapshot.restored": "restored a snapshot",
-    "invite.created": "sent an invite",
-    "access_request.created": "requested edit access",
-    "access_request.approved": "approved an access request",
-    "access_request.denied": "denied an access request",
-    "share_link.created": "created a share link",
-    "share_link.revoked": "revoked a share link",
-    "comment.created": "added a comment",
-    "comment.deleted": "deleted a comment",
-    "comment.resolved": "resolved a comment",
-  };
-  return labels[event.event_type] ?? event.event_type.replaceAll(".", " ");
-}
-
-function OffScreenCursorIndicators({
-  above,
-  below,
-}: {
-  above: PresencePeer[];
-  below: PresencePeer[];
-}) {
-  if (above.length === 0 && below.length === 0) return null;
-
-  const renderBar = (peers: PresencePeer[], direction: "up" | "down") => {
-    if (peers.length === 0) return null;
-    const shown = peers.slice(0, 4);
-    const extra = peers.length - shown.length;
-    return (
-      <div
-        className={`no-print pointer-events-none absolute left-0 right-0 z-20 flex items-center gap-1 px-3 py-0.5 ${
-          direction === "up" ? "top-0" : "bottom-0"
-        }`}
-      >
-        <span className="text-[11px] opacity-40">{direction === "up" ? "↑" : "↓"}</span>
-        {shown.map((p) => (
-          <span
-            key={p.clientID}
-            className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold text-white shadow"
-            style={{ backgroundColor: p.color }}
-            title={`${p.name} is editing ${direction === "up" ? "above" : "below"}`}
-          >
-            {presenceInitial(p)}
-          </span>
-        ))}
-        {extra > 0 && <span className="text-[10px] opacity-50">+{extra}</span>}
-      </div>
-    );
-  };
-
-  return (
-    <>
-      {renderBar(above, "up")}
-      {renderBar(below, "down")}
-    </>
-  );
-}
-
-function PresenceDock({
-  peers,
-  open,
-  onOpenChange,
-}: {
-  peers: PresencePeer[];
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  if (peers.length === 0) return null;
-  const visible = peers.slice(0, 5);
-  const overflow = peers.length - visible.length;
-  const liveCount = peers.filter((peer) => peer.connected).length;
-
-  if (!open) {
-    return (
-      <button
-        onClick={() => onOpenChange(true)}
-        className="no-print absolute bottom-4 right-4 z-10 rounded-full border border-current/10 bg-white/95 px-3 py-1.5 text-xs shadow-lg hover:bg-current/5 dark:bg-neutral-950/95"
-        title="Show collaborators"
-        aria-label="Show collaborators"
-      >
-        {liveCount} live
-      </button>
-    );
-  }
-
-  return (
-    <aside className="no-print absolute bottom-4 right-4 z-10 w-80 max-w-[calc(100vw-2rem)] rounded-lg border border-current/10 bg-white/95 p-3 shadow-lg dark:bg-neutral-950/95">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold">Collaborators</h2>
-        <div className="flex items-center gap-2">
-          <span className="text-xs opacity-60">{liveCount} live</span>
-          <button
-            onClick={() => onOpenChange(false)}
-            className="rounded px-1.5 py-0.5 text-xs opacity-70 hover:bg-current/10 hover:opacity-100"
-            title="Hide collaborators"
-            aria-label="Hide collaborators"
-          >
-            Hide
-          </button>
-        </div>
-      </div>
-      <ul className="space-y-2">
-        {visible.map((peer) => (
-          <li key={peer.clientID} className={`flex gap-2 text-sm ${peer.connected ? "" : "opacity-55"}`}>
-            <span
-              aria-hidden
-              className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white"
-              style={{ backgroundColor: peer.color }}
-            >
-              {presenceInitial(peer)}
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="flex items-center gap-2">
-                <span className="truncate font-medium">{peer.name}</span>
-                <span className="rounded-full bg-current/10 px-1.5 py-0.5 text-[10px] capitalize opacity-70">
-                  {peer.actor}
-                </span>
-              </span>
-              <span className="block truncate text-xs opacity-70">{presenceStatus(peer)}</span>
-            </span>
-          </li>
-        ))}
-      </ul>
-      {overflow > 0 && <p className="mt-2 text-xs opacity-60">+{overflow} more connected</p>}
-    </aside>
-  );
-}
-
-function snapshotChangeSummary(snapshot: SnapshotSummary) {
-  const noun = snapshot.update_count === 1 ? "update" : "updates";
-  if (snapshot.update_count <= 0) return `0 ${noun}`;
-  if (snapshot.update_start_seq === snapshot.last_seq) return `1 ${noun} · seq ${snapshot.last_seq}`;
-  return `${snapshot.update_count} ${noun} · seq ${snapshot.update_start_seq}-${snapshot.last_seq}`;
-}
-
-function SnapshotDiffView({ diff, onShowSnapshot }: { diff: LineDiff; onShowSnapshot: () => void }) {
-  if (diff.truncated) {
-    return (
-      <div className="flex flex-wrap items-center justify-between gap-3 p-4 text-sm">
-        <p className="opacity-70">This document is large enough that inline diffing is skipped.</p>
-        <button
-          onClick={onShowSnapshot}
-          className="rounded-md border border-current/15 px-3 py-1.5 hover:bg-current/5"
-        >
-          Show snapshot
-        </button>
-      </div>
-    );
-  }
-  if (diff.lines.length === 0) {
-    return <p className="p-4 text-sm opacity-70">Snapshot and current editor text match.</p>;
-  }
-  return (
-    <div className="max-h-[26rem] overflow-auto text-sm">
-      {diff.lines.map((line, index) => (
-        <div
-          key={`${index}-${line.kind}`}
-          className={`grid grid-cols-[4rem_1fr] border-b border-current/5 font-mono ${
-            line.kind === "added"
-              ? "bg-emerald-50 text-emerald-950 dark:bg-emerald-950/30 dark:text-emerald-100"
-              : line.kind === "removed"
-                ? "bg-red-50 text-red-950 dark:bg-red-950/30 dark:text-red-100"
-                : ""
-          }`}
-        >
-          <span className="select-none border-r border-current/10 px-2 py-1 text-right text-xs opacity-50">
-            {line.kind === "added" ? line.afterLine : line.beforeLine}
-          </span>
-          <pre className="overflow-x-auto whitespace-pre-wrap px-3 py-1">
-            <span className="select-none opacity-50">{line.kind === "added" ? "+ " : line.kind === "removed" ? "- " : "  "}</span>
-            {line.text || " "}
-          </pre>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function formatSnapshotDate(value: string) {
-  return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-}
-
-function filenameFromDisposition(disposition: string) {
-  const match = /filename="?([^";]+)"?/i.exec(disposition);
-  return match?.[1] ?? "";
-}
-
-function DocumentSidebar({
-  docs,
-  ownerID,
-  currentDocID,
-  loadFailed,
-  collapsed,
-  onCollapsedChange,
-}: {
-  docs: Document[];
-  ownerID: string;
-  currentDocID: string;
-  loadFailed: boolean;
-  collapsed: boolean;
-  onCollapsedChange: (collapsed: boolean) => void;
-}) {
-  const myDocs = docs.filter((doc) => doc.owner_id === ownerID);
-  const sharedDocs = docs.filter((doc) => doc.owner_id !== ownerID);
-
-  return (
-    <aside
-      className={`no-print hidden shrink-0 overflow-hidden border-r border-current/10 bg-current/[0.025] transition-[width] duration-200 ease-out md:flex md:flex-col ${
-        collapsed ? "w-11" : "w-64"
-      }`}
-    >
-      <div
-        className={`flex items-center border-b border-current/10 py-2 transition-[padding] duration-200 ease-out ${
-          collapsed ? "justify-center px-1" : "justify-between gap-2 px-3"
-        }`}
-      >
-        <h2
-          className={`overflow-hidden whitespace-nowrap text-xs font-semibold uppercase tracking-wide transition-[max-width,opacity] duration-150 ${
-            collapsed ? "pointer-events-none max-w-0 opacity-0" : "max-w-40 opacity-60"
-          }`}
-        >
-          Documents
-        </h2>
-        <button
-          onClick={() => onCollapsedChange(!collapsed)}
-          title={collapsed ? "Show documents" : "Hide documents"}
-          aria-label={collapsed ? "Show documents" : "Hide documents"}
-          className="flex h-7 w-7 items-center justify-center rounded-full text-current/60 hover:bg-current/10 hover:text-current"
-        >
-          <span aria-hidden className="text-base leading-none">{collapsed ? "›" : "‹"}</span>
-        </button>
-      </div>
-      <div
-        className={`min-h-0 flex-1 overflow-y-auto px-2 py-3 transition-opacity duration-150 ${
-          collapsed ? "pointer-events-none opacity-0" : "opacity-100 delay-75"
-        }`}
-      >
-        {loadFailed && (
-          <p className="mb-3 rounded-md border border-current/15 bg-current/[0.04] px-2 py-1.5 text-xs opacity-70">
-            Couldn&apos;t load your other documents.
-          </p>
-        )}
-        <DocumentSidebarSection
-          title="My Docs"
-          docs={myDocs}
-          currentDocID={currentDocID}
-          emptyText="No documents yet."
-        />
-        <DocumentSidebarSection
-          title="Shared with me"
-          docs={sharedDocs}
-          currentDocID={currentDocID}
-          emptyText="No shared documents."
-        />
-      </div>
-    </aside>
-  );
-}
-
-function DocumentSidebarSection({
-  title,
-  docs,
-  currentDocID,
-  emptyText,
-}: {
-  title: string;
-  docs: Document[];
-  currentDocID: string;
-  emptyText: string;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const canExpand = docs.length > 5;
-
-  return (
-    <section className="mb-5 last:mb-0">
-      <div className="mb-2 flex items-center justify-between gap-2 px-1">
-        <h3 className="text-xs font-medium uppercase tracking-wide opacity-55">{title}</h3>
-        <span className="text-[10px] opacity-45">{docs.length}</span>
-      </div>
-      {docs.length === 0 ? (
-        <p className="px-1 py-2 text-xs opacity-50">{emptyText}</p>
-      ) : (
-        <>
-          <div className={`relative ${expanded ? "max-h-64 overflow-y-auto pr-1" : "max-h-44 overflow-hidden"}`}>
-            <ul className="space-y-1">
-              {docs.map((doc) => {
-                const active = doc.id === currentDocID;
-                return (
-                  <li key={doc.id}>
-                    <Link
-                      href={`/d/${doc.id}`}
-                      aria-current={active ? "page" : undefined}
-                      className={`block rounded-md px-2 py-1.5 text-sm transition ${
-                        active
-                          ? "bg-current/10 font-medium"
-                          : "text-current/75 hover:bg-current/5 hover:text-current"
-                      }`}
-                    >
-                      <span className="block truncate">{doc.title || "Untitled"}</span>
-                      <span className="block truncate text-[10px] opacity-45">v{doc.current_version}</span>
-                    </Link>
-                  </li>
-                );
-              })}
-            </ul>
-            {canExpand && !expanded && (
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-gradient-to-b from-transparent to-white dark:to-neutral-950" />
-            )}
-          </div>
-          {canExpand && (
-            <button
-              onClick={() => setExpanded((value) => !value)}
-              className="mt-2 w-full rounded-md border border-current/10 px-2 py-1 text-xs font-medium text-current/70 hover:bg-current/5 hover:text-current"
-            >
-              {expanded ? "Show less" : "Show more"}
-            </button>
-          )}
-        </>
-      )}
-    </section>
-  );
-}
-
-// IconBtn — uniform 32×32 hover-tinted icon button. Every action in the
-// editor topbar wears the same style; no "accent" variants — UI/UX uniformity
-// reads as polish at a glance, where one filled circle reads as inconsistent.
-function IconBtn({
-  onClick,
-  title,
-  disabled,
-  className,
-  children,
-}: {
-  onClick: () => void;
-  title: string;
-  disabled?: boolean;
-  className?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      aria-label={title}
-      className={`flex h-8 w-8 items-center justify-center rounded-full text-current/70 transition hover:bg-current/10 hover:text-current disabled:opacity-50${className ? ` ${className}` : ""}`}
-    >
-      {children}
-    </button>
-  );
-}
-
-function MobileActionsMenu({
-  publishState,
-  onPublish,
-  onShare,
-  onExport,
-  onPrint,
-  onHistory,
-  onReview,
-}: {
-  publishState: "idle" | "saving" | "saved" | "error";
-  onPublish: () => void;
-  onShare: () => void;
-  onExport: () => void;
-  onPrint: () => void;
-  onHistory: () => void;
-  onReview: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDocClick = (e: MouseEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onEsc = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDocClick);
-    document.addEventListener("keydown", onEsc);
-    return () => {
-      document.removeEventListener("mousedown", onDocClick);
-      document.removeEventListener("keydown", onEsc);
-    };
-  }, [open]);
-
-  const item = (label: string, onClick: () => void, icon: ReactNode, disabled?: boolean) => (
-    <button
-      role="menuitem"
-      disabled={disabled}
-      onClick={() => {
-        setOpen(false);
-        onClick();
-      }}
-      className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm hover:bg-current/5 disabled:opacity-50"
-    >
-      <span className="flex h-5 w-5 shrink-0 items-center justify-center text-current/70">{icon}</span>
-      <span>{label}</span>
-    </button>
-  );
-
-  return (
-    <div ref={rootRef} className="relative md:hidden">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        title="Document actions"
-        aria-label="Document actions"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className="flex h-8 w-8 items-center justify-center rounded-full text-current/70 transition hover:bg-current/10 hover:text-current"
-      >
-        <MenuIcon className="h-[18px] w-[18px]" />
-      </button>
-      {open && (
-        <div
-          role="menu"
-          className="fixed right-2 top-12 z-50 mt-1 w-[min(16rem,calc(100vw-1rem))] overflow-hidden rounded-xl border border-current/10 bg-white shadow-xl dark:bg-neutral-950"
-        >
-          {item(
-            publishState === "saving" ? "Publishing…" : "Publish snapshot",
-            onPublish,
-            <CloudUpIcon className={`h-[18px] w-[18px] ${publishIconClass(publishState)}`} />,
-            publishState === "saving",
-          )}
-          {item("Share document", onShare, <ShareIcon className="h-[18px] w-[18px]" />)}
-          {item("Export Markdown", onExport, <DownloadIcon className="h-[18px] w-[18px]" />)}
-          {item("Comments", onReview, <MessageSquareIcon className="h-[18px] w-[18px]" />)}
-          {item("Print", onPrint, <PrinterIcon className="h-[18px] w-[18px]" />)}
-          {item("Version history", onHistory, <HistoryIcon className="h-[18px] w-[18px]" />)}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ServerSaveStatus({ state }: { state: SaveState }) {
-  const map = {
-    saving: {
-      label: "Saving…",
-      className: "text-neutral-500 dark:text-neutral-400",
-      icon: <SpinnerIcon className="h-[18px] w-[18px] animate-spin" />,
-    },
-    saved: {
-      label: "Saved",
-      className: "text-emerald-600 dark:text-emerald-400",
-      icon: <CheckIcon className="h-[17px] w-[17px]" />,
-    },
-    offline: {
-      label: "Offline",
-      className: "text-amber-600 dark:text-amber-400",
-      icon: <CloudOffIcon className="h-[18px] w-[18px]" />,
-    },
-  } as const;
-  const s = map[state];
-  return (
-    <span
-      role="status"
-      aria-label={s.label}
-      title={s.label}
-      className={`flex h-7 w-7 shrink-0 items-center justify-center ${s.className}`}
-    >
-      {s.icon}
-    </span>
-  );
-}
-
-function publishIconClass(state: "idle" | "saving" | "saved" | "error") {
-  if (state === "saved") return "text-emerald-600 dark:text-emerald-400";
-  if (state === "error") return "text-red-600 dark:text-red-400";
-  if (state === "saving") return "animate-pulse text-neutral-600 dark:text-neutral-300";
-  return "";
-}
-
-type AssetUploadOpts = {
-  canUpload: () => boolean;
-  onError: (msg: string) => void;
-};
-
-const ALLOWED_ASSET_TYPES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/gif",
-  "image/webp",
-  "image/svg+xml",
-]);
-const ASSET_MAX_BYTES = 8 * 1024 * 1024;
-
-function blameColorToken(color: string) {
-  const token = color.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return token || "neutral";
-}
-
-async function uploadAndInsertImagesMonaco(
-  editor: Monaco.editor.IStandaloneCodeEditor,
-  monaco: typeof Monaco,
-  docId: string,
-  rawFiles: File[],
-  opts: AssetUploadOpts,
-  offset?: number,
-) {
-  const model = editor.getModel();
-  if (!model || !monaco) return;
-  if (!opts.canUpload()) {
-    opts.onError("You don't have edit access on this document.");
-    return;
-  }
-  const accepted: File[] = [];
-  for (const f of rawFiles) {
-    if (!ALLOWED_ASSET_TYPES.has(f.type)) {
-      opts.onError(`Unsupported file type: ${f.type || f.name}`);
-      continue;
-    }
-    if (f.size > ASSET_MAX_BYTES) {
-      opts.onError(`${f.name} is larger than the 8 MiB upload cap.`);
-      continue;
-    }
-    accepted.push(f);
-  }
-  for (const file of accepted) {
-    const placeholder = `\n![uploading ${file.name}…]()\n`;
-    const at = offset ?? model.getOffsetAt(editor.getPosition() ?? new monaco.Position(1, 1));
-    const start = model.getPositionAt(at);
-    editor.executeEdits("syncscribe-asset-upload", [{
-      range: new monaco.Range(start.lineNumber, start.column, start.lineNumber, start.column),
-      text: placeholder,
-      forceMoveMarkers: true,
-    }]);
-    const placeholderStart = at;
-    const placeholderEnd = at + placeholder.length;
-    editor.setPosition(model.getPositionAt(placeholderEnd));
-    try {
-      const res = await api.uploadAsset(docId, file);
-      const alt = file.name.replace(/[\[\]]/g, "") || "image";
-      const md = `![${alt}](${res.url})`;
-      replaceEditorText(editor, monaco, placeholderStart, placeholderEnd, md);
-    } catch (err) {
-      replaceEditorText(editor, monaco, placeholderStart, placeholderEnd, "");
-      const msg = err instanceof Error ? err.message : "Upload failed.";
-      opts.onError(`${file.name}: ${msg}`);
-    }
-  }
-}
-
-function replaceEditorText(
-  editor: Monaco.editor.IStandaloneCodeEditor,
-  monaco: typeof Monaco,
-  from: number,
-  to: number,
-  text: string,
-) {
-  const model = editor.getModel();
-  if (!model || !monaco) return;
-  const start = model.getPositionAt(from);
-  const end = model.getPositionAt(to);
-  editor.executeEdits("syncscribe-asset-upload", [{
-    range: new monaco.Range(start.lineNumber, start.column, end.lineNumber, end.column),
-    text,
-    forceMoveMarkers: true,
-  }]);
-}
-
-// AuthedImg renders <img> for markdown URLs that point at our authed asset
-// endpoint. The browser cannot send a Bearer token from a plain `src`, so we
-// fetch the asset, convert to a blob URL, and swap it in. Non-asset URLs
-// (external images) pass through unchanged.
-function AuthedImg({ docId, src, alt, ...rest }: { docId: string; src?: string; alt?: string } & React.ImgHTMLAttributes<HTMLImageElement>) {
-  const [asset, setAsset] = useState<{ src: string; resolved?: string; failed: boolean }>({
-    src: "",
-    resolved: undefined,
-    failed: false,
-  });
-  const assetMatch = src?.match(/\/api\/documents\/([^/]+)\/assets\/([^/?#]+)/);
-  const shouldFetch = !!assetMatch && assetMatch[1] === docId;
-  const resolved = shouldFetch ? (asset.src === src ? asset.resolved : undefined) : src;
-  const failed = shouldFetch ? asset.src === src && asset.failed : false;
-
-  useEffect(() => {
-    if (!src || !assetMatch || !shouldFetch) return;
-    let alive = true;
-    let blob: string | null = null;
-    const [, , assetId] = assetMatch;
-    (async () => {
-      try {
-        const u = await api.fetchAssetBlobURL(docId, assetId);
-        if (!alive) {
-          URL.revokeObjectURL(u);
-          return;
-        }
-        blob = u;
-        setAsset({ src, resolved: u, failed: false });
-      } catch {
-        if (alive) setAsset({ src, resolved: undefined, failed: true });
-      }
-    })();
-    return () => {
-      alive = false;
-      if (blob) URL.revokeObjectURL(blob);
-    };
-  }, [assetMatch, docId, shouldFetch, src]);
-
-  if (failed) return <span className="text-xs opacity-60">[image failed to load]</span>;
-  if (!resolved) return <span className="text-xs opacity-60">Loading image…</span>;
-  // eslint-disable-next-line @next/next/no-img-element
-  return <img src={resolved} alt={alt ?? ""} {...rest} />;
-}
-
-// --- Comments panel, context menu, and comment input popup ---
-
-function CommentsPanel({
-  panelRef,
-  comments,
-  error,
-  selectedCommentId,
-  onClose,
-  onResolve,
-  onDelete,
-  onSelect,
-}: {
-  panelRef: React.RefObject<HTMLElement | null>;
-  comments: DocumentComment[];
-  error: string;
-  selectedCommentId: string | null;
-  onClose: () => void;
-  onResolve: (id: string) => void;
-  onDelete: (id: string, label: string) => void;
-  onSelect: (id: string) => void;
-}) {
-  const open = comments.filter((c) => !c.resolved_at);
-  const resolved = comments.filter((c) => !!c.resolved_at);
-
-  return (
-    <aside ref={panelRef} data-comment-panel className="no-print flex w-72 shrink-0 flex-col border-l border-current/10 bg-white dark:bg-neutral-950 xl:w-80">
-      <div className="flex shrink-0 items-center justify-between border-b border-current/10 px-4 py-3">
-        <h2 className="text-sm font-semibold">Comments</h2>
-        <button
-          onClick={onClose}
-          className="rounded p-1 text-current/50 hover:bg-current/10 hover:text-current"
-          aria-label="Close comments"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4" aria-hidden><path d="M18 6 6 18M6 6l12 12" /></svg>
-        </button>
-      </div>
-
-      {error && (
-        <p className="mx-3 mt-2 shrink-0 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-950/30 dark:text-red-400">{error}</p>
-      )}
-
-      {comments.length === 0 && !error && (
-        <div className="flex flex-1 items-center justify-center">
-          <div className="py-8 text-center">
-            <p className="text-sm opacity-50">No comments yet.</p>
-            <p className="mt-1 text-xs opacity-40">Right-click in the editor to add one.</p>
-          </div>
-        </div>
-      )}
-
-      {open.length > 0 && (
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-          <div className="space-y-3">
-            {open.map((c) => (
-              <CommentCard
-                key={c.id}
-                comment={c}
-                selected={selectedCommentId === c.id}
-                onSelect={() => onSelect(c.id)}
-                onResolve={onResolve}
-                onDelete={onDelete}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {resolved.length > 0 && (
-        <div className="shrink-0 overflow-y-auto border-t border-current/10" style={{ maxHeight: "40%" }}>
-          <p className="px-4 pb-1 pt-3 text-xs font-medium uppercase tracking-wide opacity-40">Resolved</p>
-          <div className="space-y-2 px-3 pb-3">
-            {resolved.map((c) => (
-              <CommentCard
-                key={c.id}
-                comment={c}
-                selected={selectedCommentId === c.id}
-                onSelect={() => onSelect(c.id)}
-                onResolve={onResolve}
-                onDelete={onDelete}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-    </aside>
-  );
-}
-
-function CommentCard({
-  comment,
-  selected,
-  onSelect,
-  onResolve,
-  onDelete,
-}: {
-  comment: DocumentComment;
-  selected: boolean;
-  onSelect: () => void;
-  onResolve: (id: string) => void;
-  onDelete: (id: string, label: string) => void;
-}) {
-  const initials = (comment.author_name || "?")
-    .split(" ")
-    .map((p) => p[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-  const anchorLabel = comment.anchor_text || (comment.line_number ? `line ${comment.line_number}` : "");
-  const deleteLabel = comment.anchor_text ? `"${comment.anchor_text}"` : comment.body;
-
-  return (
-    <div
-      className={`rounded-lg border p-3 text-sm transition-all cursor-pointer ${
-        selected
-          ? "border-indigo-400 bg-indigo-50/60 shadow-sm dark:border-indigo-600 dark:bg-indigo-950/30"
-          : "border-current/10 hover:border-current/20"
-      } ${comment.resolved_at ? "opacity-50" : ""}`}
-      onClick={onSelect}
-    >
-      <div className="mb-2 flex items-start gap-2">
-        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-indigo-100 text-[10px] font-bold text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300">
-          {initials}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="font-medium leading-tight">{comment.author_name}</span>
-            {anchorLabel && (
-              <span className="rounded bg-current/8 px-1.5 py-0.5 text-[10px] font-mono opacity-70">
-                {comment.anchor_text ? `"${comment.anchor_text}"` : anchorLabel}
-              </span>
-            )}
-            {comment.kind === "suggestion" && (
-              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
-                suggestion
-              </span>
-            )}
-          </div>
-          <p className="text-[11px] opacity-50 leading-tight mt-0.5">
-            {new Date(comment.created_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
-          </p>
-        </div>
-      </div>
-      <p className="whitespace-pre-wrap text-sm leading-relaxed">{comment.body}</p>
-      <div className="mt-2 flex items-center gap-2">
-        {!comment.resolved_at ? (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onResolve(comment.id);
-            }}
-            className="flex items-center gap-1 rounded px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/30"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-3 w-3" aria-hidden><path d="M20 6 9 17l-5-5" /></svg>
-            Resolve
-          </button>
-        ) : (
-          <p className="flex items-center gap-1 text-xs opacity-40">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="h-3 w-3" aria-hidden><path d="M20 6 9 17l-5-5" /></svg>
-            Resolved
-          </p>
-        )}
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete(comment.id, deleteLabel);
-          }}
-          className="flex items-center gap-1 rounded px-2 py-1 text-xs text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-3 w-3" aria-hidden>
-            <path d="M3 6h18" />
-            <path d="M8 6V4h8v2" />
-            <path d="M19 6l-1 14H6L5 6" />
-            <path d="M10 11v6M14 11v6" />
-          </svg>
-          Delete
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function EditorContextMenu({
-  x,
-  y,
-  onAddComment,
-  onAddSuggestion,
-  onInsertImage,
-  canInsertImage,
-  onClose: _onClose,
-}: {
-  x: number;
-  y: number;
-  onAddComment: () => void;
-  onAddSuggestion: () => void;
-  onInsertImage: () => void;
-  canInsertImage: boolean;
-  onClose: () => void;
-}) {
-  // Clamp to viewport so menu never clips off screen.
-  const menuW = 192;
-  const menuH = 120;
-  const left = Math.min(x, window.innerWidth - menuW - 8);
-  const top = Math.min(y, window.innerHeight - menuH - 8);
-
-  return (
-    <div
-      className="fixed z-50 min-w-48 overflow-hidden rounded-lg border border-current/10 bg-white py-1 shadow-lg dark:bg-neutral-900"
-      style={{ left, top }}
-    >
-      <button
-        className="flex w-full items-center gap-2.5 px-3 py-2 text-sm hover:bg-current/5"
-        onClick={onAddComment}
-      >
-        <MessageSquareIcon className="h-4 w-4 opacity-60" />
-        Add comment
-      </button>
-      <button
-        className="flex w-full items-center gap-2.5 px-3 py-2 text-sm hover:bg-current/5"
-        onClick={onAddSuggestion}
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 opacity-60" aria-hidden>
-          <path d="M12 20h9M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
-        </svg>
-        Suggest edit
-      </button>
-      <div className="my-1 border-t border-current/10" />
-      <button
-        className="flex w-full items-center gap-2.5 px-3 py-2 text-sm hover:bg-current/5 disabled:cursor-not-allowed disabled:opacity-50"
-        onClick={onInsertImage}
-        disabled={!canInsertImage}
-        title={canInsertImage ? "" : "You don't have edit access on this document"}
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4 opacity-60" aria-hidden>
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-          <circle cx="8.5" cy="8.5" r="1.5" />
-          <path d="M21 15l-5-5L5 21" />
-        </svg>
-        Insert image…
-      </button>
-    </div>
-  );
-}
-
-function CommentInputPopup({
-  x,
-  y,
-  anchor,
-  kind,
-  body,
-  submitting,
-  error,
-  onChange,
-  onSubmit,
-  onCancel,
-}: {
-  x: number;
-  y: number;
-  anchor: CommentAnchorDraft;
-  kind: "comment" | "suggestion";
-  body: string;
-  submitting: boolean;
-  error: string;
-  onChange: (v: string) => void;
-  onSubmit: () => void;
-  onCancel: () => void;
-}) {
-  const popupW = 304;
-  const popupH = 160;
-  const left = Math.min(x + 8, window.innerWidth - popupW - 8);
-  const top = Math.min(y, window.innerHeight - popupH - 8);
-  const anchorLabel = anchor.anchor_text || `line ${anchor.line}`;
-
-  return (
-    <div
-      className="fixed z-50 w-76 rounded-xl border border-current/10 bg-white p-3 shadow-xl dark:bg-neutral-900"
-      style={{ left, top, width: popupW }}
-      onClick={(e) => e.stopPropagation()}
-    >
-      <div className="mb-2 flex items-center gap-2">
-        <span className="text-xs font-medium capitalize opacity-70">{kind}</span>
-        <span className="rounded bg-current/8 px-1.5 py-0.5 font-mono text-[10px] opacity-60">
-          {anchorLabel}
-        </span>
-        {anchor.anchor_text && (
-          <span className="rounded bg-current/8 px-1.5 py-0.5 font-mono text-[10px] opacity-60">
-            selection
-          </span>
-        )}
-      </div>
-      <textarea
-        autoFocus
-        value={body}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); if (body.trim()) onSubmit(); }
-          if (e.key === "Escape") onCancel();
+        docId={id}
+        currentBody={previewText}
+        canRestore={connState !== "readonly"}
+        onRestored={(t) => {
+          setTitle(limitDocumentTitle(t));
+          setTitleDraft(limitDocumentTitle(t));
         }}
-        rows={3}
-        placeholder={kind === "suggestion" ? "Describe your suggested change…" : "Add a comment…"}
-        className="w-full resize-none rounded-lg border border-current/15 bg-transparent px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:focus:border-indigo-500"
       />
-      {error && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{error}</p>}
-      <div className="mt-2 flex justify-end gap-2">
-        <button
-          onClick={onCancel}
-          className="rounded-md px-3 py-1.5 text-sm opacity-60 hover:opacity-100"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={onSubmit}
-          disabled={!body.trim() || submitting}
-          className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-        >
-          {submitting ? "Saving…" : kind === "suggestion" ? "Add suggestion" : "Comment"}
-        </button>
-      </div>
     </div>
   );
 }
-
