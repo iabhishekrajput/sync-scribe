@@ -16,10 +16,8 @@ const (
 	flowCookieName    = "ss_flow"
 	sessionCookieName = "ss_session"
 
-	flowCookieTTL = 10 * time.Minute
-	// Session cookie outlives the access token so we can detect "had a
-	// session, token now expired" and steer the user to re-login cleanly.
-	sessionCookieTTL = 24 * time.Hour
+	flowCookieTTL    = 10 * time.Minute
+	sessionCookieTTL = 14 * 24 * time.Hour
 )
 
 // Handler wires the OIDC RP HTTP routes. Stateless — all flow state lives in
@@ -38,13 +36,10 @@ type flowState struct {
 	ReturnTo string `json:"r"`
 }
 
-// sessionState holds the access token directly because the IdP at
-// auth.anekdote.in doesn't issue refresh tokens (no refresh_token grant in
-// discovery). When ExpiresAt passes, the next /auth/refresh call returns 401
-// and the frontend kicks the user to /login.
 type sessionState struct {
-	AccessToken string `json:"at"`
-	ExpiresAt   int64  `json:"e"`
+	AccessToken  string `json:"at"`
+	RefreshToken string `json:"rt"`
+	ExpiresAt    int64  `json:"e"`
 }
 
 // Login: GET /auth/login?return_to=/some/path
@@ -86,7 +81,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 }
 
 // Callback: GET /auth/callback?code=...&state=...
-// Validates state, exchanges code+verifier for tokens, sets the refresh cookie,
+// Validates state, exchanges code+verifier for tokens, sets the session cookie,
 // redirects to the frontend's stored return_to.
 func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(flowCookieName)
@@ -134,8 +129,9 @@ func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session := sessionState{
-		AccessToken: tok.AccessToken,
-		ExpiresAt:   tok.Expiry.Unix(),
+		AccessToken:  tok.AccessToken,
+		RefreshToken: tok.RefreshToken,
+		ExpiresAt:    tok.Expiry.Unix(),
 	}
 	enc, err := Encode(h.CookieSecret, session, time.Now().Add(sessionCookieTTL))
 	if err != nil {
@@ -172,9 +168,9 @@ func safeReturnTo(p string) string {
 }
 
 // Refresh: POST /auth/refresh
-// Reads the refresh cookie, exchanges it for a new access token, returns
-// { access_token, expires_in } as JSON. Frontend holds the access token in
-// memory and attaches it as Bearer on REST + WS calls.
+// Reads the session cookie and returns { access_token, expires_in } as JSON.
+// Refresh-token sessions rotate first; access-token-only sessions are valid
+// until their access token expires.
 type refreshResponse struct {
 	AccessToken string `json:"access_token"`
 	ExpiresIn   int64  `json:"expires_in"`
@@ -197,16 +193,59 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().Unix()
-	if ss.ExpiresAt <= now {
+	if ss.RefreshToken == "" {
+		if ss.ExpiresAt > now && ss.AccessToken != "" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(refreshResponse{
+				AccessToken: ss.AccessToken,
+				ExpiresIn:   ss.ExpiresAt - now,
+				TokenType:   "Bearer",
+			})
+			return
+		}
 		ClearCookie(w, sessionCookieName, h.CookieSecure)
 		httpx.WriteError(w, r, httpx.Unauthenticated("Your session has expired. Sign in again to continue.", nil))
 		return
 	}
 
+	tok, err := h.P.OAuth2.TokenSource(r.Context(), &oauth2.Token{
+		AccessToken:  ss.AccessToken,
+		RefreshToken: ss.RefreshToken,
+		Expiry:       time.Unix(ss.ExpiresAt, 0),
+	}).Token()
+	if err != nil {
+		ClearCookie(w, sessionCookieName, h.CookieSecure)
+		httpx.WriteError(w, r, httpx.Unauthenticated("Your session has expired. Sign in again to continue.", err))
+		return
+	}
+	if tok.AccessToken == "" {
+		ClearCookie(w, sessionCookieName, h.CookieSecure)
+		httpx.WriteError(w, r, httpx.Unauthenticated("Your session has expired. Sign in again to continue.", nil))
+		return
+	}
+	if tok.RefreshToken == "" {
+		tok.RefreshToken = ss.RefreshToken
+	}
+	if tok.Expiry.IsZero() {
+		tok.Expiry = time.Now().Add(time.Hour)
+	}
+
+	session := sessionState{
+		AccessToken:  tok.AccessToken,
+		RefreshToken: tok.RefreshToken,
+		ExpiresAt:    tok.Expiry.Unix(),
+	}
+	enc, err := Encode(h.CookieSecret, session, time.Now().Add(sessionCookieTTL))
+	if err != nil {
+		httpx.WriteError(w, r, httpx.Internal("Could not save the session cookie.", err))
+		return
+	}
+	SetCookie(w, sessionCookieName, enc, sessionCookieTTL, h.CookieSecure)
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(refreshResponse{
-		AccessToken: ss.AccessToken,
-		ExpiresIn:   ss.ExpiresAt - now,
+		AccessToken: tok.AccessToken,
+		ExpiresIn:   max(0, tok.Expiry.Unix()-time.Now().Unix()),
 		TokenType:   "Bearer",
 	})
 }
@@ -230,4 +269,3 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(p)
 }
-

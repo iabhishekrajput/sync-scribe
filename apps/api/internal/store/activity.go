@@ -74,3 +74,44 @@ LIMIT $2
 	}
 	return out, rows.Err()
 }
+
+func (s *Store) ListActivityAfter(ctx context.Context, docID uuid.UUID, ownerID string, afterID int64, limit int) ([]ActivityEvent, error) {
+	d, err := s.GetDocument(ctx, docID, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	if d.OwnerID != ownerID {
+		return nil, ErrForbidden
+	}
+	if afterID < 0 {
+		afterID = 0
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	rows, err := s.Pool.Query(ctx, `
+SELECT id, document_id, COALESCE(actor_id, ''), actor_label, event_type, detail, created_at
+FROM document_activity
+WHERE document_id = $1 AND id > $2
+ORDER BY id ASC
+LIMIT $3
+`, docID, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]ActivityEvent, 0)
+	for rows.Next() {
+		var event ActivityEvent
+		var detailBytes []byte
+		if err := rows.Scan(&event.ID, &event.DocumentID, &event.ActorID, &event.ActorLabel, &event.EventType, &detailBytes, &event.CreatedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(detailBytes, &event.Detail); err != nil {
+			event.Detail = map[string]any{}
+		}
+		out = append(out, event)
+	}
+	return out, rows.Err()
+}

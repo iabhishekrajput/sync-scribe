@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -13,8 +12,7 @@ import (
 // healthLive is the liveness probe: returns 200 as long as the process is up.
 // Load balancers use this to decide whether to restart the container.
 func (s *Server) healthLive(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	writeJSON(w, http.StatusOK, map[string]string{
 		"status":  "ok",
 		"service": "syncscribe-api",
 	})
@@ -28,16 +26,13 @@ func (s *Server) healthReady(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if err := s.store.Pool.Ping(ctx); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(map[string]string{
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"status": "unavailable",
 			"error":  "database unreachable",
 		})
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	writeJSON(w, http.StatusOK, map[string]string{
 		"status":  "ready",
 		"service": "syncscribe-api",
 	})
@@ -135,9 +130,9 @@ func (s *Server) healthCanary(w http.ResponseWriter, r *http.Request) {
 		report.Status = "degraded"
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	status := http.StatusOK
 	if !allOK {
-		w.WriteHeader(http.StatusServiceUnavailable)
+		status = http.StatusServiceUnavailable
 	}
-	_ = json.NewEncoder(w).Encode(report)
+	writeJSON(w, status, report)
 }

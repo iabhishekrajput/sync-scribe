@@ -173,24 +173,22 @@ All provenance surfaces use Yjs item-id ranges as the canonical anchor, with UTF
 
 ### 5.2 WebSocket `/api/sync/:docId`
 
-**Phase 1 wire format (locked):** custom tagged binary frames carrying opaque Yjs update bytes. The server never interprets Yjs payloads; clients use a custom provider in `apps/web/app/lib/yjs.ts` that matches this wire.
+**Wire format (current, P3.1/P3.3):** stock `y-protocols` varint framing — `[msgType: varint] [body...]` — carrying opaque Yjs update bytes. The server never interprets Yjs payloads. Subprotocol is `syncscribe.yjs.v1`; a client that doesn't negotiate it is refused with close code 4002. The historical Phase 1 tagged transport (`syncscribe.v1`, 1-byte tags `0x00`–`0x05`) was removed once both first-party clients spoke y-protocols. SDK lives in `packages/client`; `apps/web/app/lib/yjs.ts` is a thin adapter over it.
 
-| Tag | Meaning |
+| msgType | Meaning |
 |---|---|
-| `0x00` | UPDATE |
-| `0x01` | SYNC_COMPLETE |
-| `0x02` | AWARENESS |
-| `0x03` | PING |
-| `0x04` | READONLY |
-| `0x05` | ACK after durable append |
+| `0` MsgSync | Sync sub-protocol: SyncStep1 (0), SyncStep2 (1, validated+discarded server-side), SyncUpdate (2) |
+| `1` MsgAwareness | y-protocols awareness; guests anonymized server-side |
+| `4` MsgReadonly | server rejected writes for this conn (SyncScribe extension) |
+| `5` MsgAck | one per durable append, drives Saving/Saved (SyncScribe extension) |
 
-A `RESYNC` close (code 4010) is reserved for buffer-overflow recovery; see §8 P1.4 for the contract.
+On connect the server replays stored updates as SyncUpdate frames, then its own SyncStep1, then MsgReadonly if applicable — a client that sees the server's SyncStep1 is caught up. A `RESYNC` close (code 4010) is reserved for buffer-overflow recovery; see §8 P1.4 for the contract.
 
 **Handshake:**
-1. Authenticated clients connect with bearer in `Sec-WebSocket-Protocol`.
+1. Authenticated clients connect with bearer as the second `Sec-WebSocket-Protocol` entry after `syncscribe.yjs.v1`.
 2. Public share-link clients connect with `?share_token=...`.
 3. Server validates BEFORE accepting upgrade. Reject = HTTP 401/403. No mid-stream AUTH frame race.
-4. Awareness frames are relayed today; server-side guest anonymization is Phase 2 governance work.
+4. Awareness frames are relayed; guest awareness is anonymized server-side.
 
 ---
 
@@ -441,13 +439,11 @@ Phase 3 is the next-major-milestone authored by the office-hours session on 2026
 - Acceptance: full `go test ./...` and web typecheck/build/lint pass; grep for `agent`, `Agent`, `actor='agent'`, `origin_actor`, `agents_paused`, `agent_intent` returns zero hits outside this plan.md history sections and the design doc.
 
 #### P3.1 — Stock y-protocols interop migration (B1 in design doc)
-- Convert the WS sync path to stock `y-protocols` framing with a dual-framing sniffer for one release.
-- Publish `@syncscribe/client` v0.1 SDK to npm.
-- Add `docker compose up` quickstart with seeded demo doc.
-- Add `GET /api/docs/:id/attribution` with item-id-range + `sinceUpdateId` cursor.
-- Create `syncscribe-integration-example` external repo demonstrating a non-Web client.
-- Tag **v0.1**.
-- Acceptance criteria in the design doc.
+- ✅ Convert the WS sync path to stock `y-protocols` framing. (The dual-framing sniffer was skipped — both first-party clients already preferred `syncscribe.yjs.v1` and the SDK was unpublished, so the legacy transport was removed outright instead; see P3.3.)
+- `@syncscribe/client` v0.1 SDK is now modular and `dist`-buildable with `publishConfig` set; the actual `npm publish` remains the open item.
+- ✅ Add `GET /api/docs/:id/attribution` with `sinceUpdateId` cursor.
+- ✅ `syncscribe-integration-example` demonstrates a non-Web client.
+- Remaining: `docker compose up` quickstart polish, npm publish, tag **v0.1**.
 
 #### P3.2 — Per-user provenance write surface (B2 in design doc)
 - `POST /api/docs/:id/revert/by-user/:userId/preview` — dry-run preview with revertable/orphaned partitioning, transitively closed.
@@ -460,7 +456,7 @@ Phase 3 is the next-major-milestone authored by the office-hours session on 2026
 
 #### P3.3 — Reproducible collab demo + v0 framing removal (B3 in design doc)
 - `tools/collab-demo/` runs a scripted three-user editing recipe; produces a deterministic transcript matching a checked-in golden file.
-- Remove the legacy custom v0 framing from the server (only breaking change of v0.3).
+- ✅ **Legacy custom v0 framing removed** (pulled forward ahead of the demo). The server, SDK, and web all speak only `syncscribe.yjs.v1`; non-matching clients are refused with close code 4002. History now replays at connection-open rather than on the client's first SyncStep1. Approved breaking change. Note: the server validates-and-discards client SyncStep2 — a stock y-protocols client with pre-existing offline state loses it (first-party clients resend from their outbox); revisit when update compaction (P2.6) lands.
 - Tag **v0.3**.
 - Acceptance criteria in the design doc.
 

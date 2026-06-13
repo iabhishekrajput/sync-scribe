@@ -47,7 +47,9 @@ export async function getAccessToken(): Promise<string | null> {
   return s?.accessToken ?? null;
 }
 
-export async function fetchMe(): Promise<unknown | null> {
+export type Me = { id: string; email: string; display_name: string };
+
+export async function fetchMe(): Promise<Me | null> {
   const token = await getAccessToken();
   if (!token) return null;
   const res = await fetch(`${API}/api/me`, {
@@ -55,7 +57,7 @@ export async function fetchMe(): Promise<unknown | null> {
     credentials: "include",
   });
   if (!res.ok) return null;
-  return res.json();
+  return res.json() as Promise<Me>;
 }
 
 export async function signOut(): Promise<void> {

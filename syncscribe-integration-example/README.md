@@ -19,4 +19,4 @@ pnpm build
 pnpm start
 ```
 
-The script connects over WebSocket, appends a line, then fetches attribution data over HTTP and prints the first few blame spans.
+The script connects over WebSocket (single `syncscribe.yjs.v1` subprotocol, stock y-protocols framing), authenticates with a `getToken` callback, appends a line, waits for the server to durably persist it via the `onSaveState` "saved" signal, then fetches attribution data over HTTP and prints the first few blame spans. It demonstrates the SDK options a non-web consumer cares about: `getToken` (re-evaluated per reconnect), `onSaveState`, and `onDisconnectReason`.

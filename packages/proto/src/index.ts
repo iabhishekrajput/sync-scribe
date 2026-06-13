@@ -1,8 +1,7 @@
 // Shared wire constants between web and api.
-// WS framing follows y-protocols varint message types — see plan.md §4.2.
+// WS framing follows y-protocols varint message types — see PLAN.md §5.2.
 
 export const WIRE_VERSION = 1;
-export const SUBPROTOCOL_LEGACY = "syncscribe.v1";
 export const SUBPROTOCOL_YJS = "syncscribe.yjs.v1";
 
 // y-protocols message type IDs (varint). Mirrored here for type-safety in TS
@@ -21,6 +20,7 @@ export const SYNC_UPDATE = 2;
 
 // WS close codes used by the server.
 export const CLOSE_AUTH_EXPIRED = 4001;
+export const CLOSE_UNSUPPORTED_PROTOCOL = 4002;
 export const CLOSE_PERMISSION_DENIED = 4003;
 export const CLOSE_RATE_LIMITED = 4008;
 export const CLOSE_RESYNC = 4010;

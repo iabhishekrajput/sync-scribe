@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "paths": {
+      "@syncscribe/proto": ["../proto/dist/index.d.ts"],
+      "yjs": ["../../apps/web/node_modules/yjs"],
+      "y-protocols/*": ["../../apps/web/node_modules/y-protocols/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["src/__tests__/**"]
+}

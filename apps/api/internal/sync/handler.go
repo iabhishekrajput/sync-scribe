@@ -39,7 +39,7 @@ func New(hub *Hub, prov *auth.Provider, st *docstore.Store, allowedOrigin string
 	h.upgrader = websocket.Upgrader{
 		ReadBufferSize:  4 << 10,
 		WriteBufferSize: 4 << 10,
-		Subprotocols:    []string{SubprotocolYjs, SubprotocolLegacy},
+		Subprotocols:    []string{SubprotocolYjs},
 		CheckOrigin: func(r *http.Request) bool {
 			origin := r.Header.Get("Origin")
 			if origin == "" {
@@ -68,8 +68,8 @@ func originMatches(got, allowed string) bool {
 // authorizing the user against the requested document.
 //
 // Auth tokens come via either Authorization: Bearer (curl / native) or the
-// Sec-WebSocket-Protocol channel "syncscribe.v1, <token>" (browser — can't
-// set arbitrary headers on WS upgrades).
+// Sec-WebSocket-Protocol channel "syncscribe.yjs.v1, <token>" (browser —
+// can't set arbitrary headers on WS upgrades).
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	docID, err := uuid.Parse(chi.URLParam(r, "id"))
 	if err != nil {
@@ -173,11 +173,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	protocol := ws.Subprotocol()
-	if protocol == "" {
-		protocol = SubprotocolLegacy
+	if !ensureYjsSubprotocol(ws) {
+		return
 	}
-	c := newConn(ws, principal, canWrite, protocol)
+	c := newConn(ws, principal, canWrite)
 	c.remoteIP = ip
 	c.onClose = releaseIP
 	// Hand IP-slot ownership to the conn; the deferred releaseOnError above
@@ -185,22 +184,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	releaseOnError = nil
 	session := h.Hub.join(docID, c)
 
-	if protocol == SubprotocolLegacy {
-		// Replay history before the writePump goroutine takes over. Enqueueing
-		// straight into c.send respects the same backpressure budget as live
-		// fanout; outbound buffer is 256 frames so very long histories will
-		// spill and trip a RESYNC close — acceptable until P2.6 ships update
-		// compaction.
-		replayCtx, replayCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		updates, err := h.Hub.store.LoadUpdates(replayCtx, docID)
-		replayCancel()
-		if err != nil {
-			log.Error().Err(err).Msg("replay load")
-			_ = ws.Close()
-			return
-		}
-		replayBytes.Observe(float64(replayInto(c, updates, canWrite)))
+	// Replay history before the writePump goroutine takes over. Enqueueing
+	// straight into c.send respects the same backpressure budget as live
+	// fanout; outbound buffer is 256 frames so very long histories will
+	// spill and trip a RESYNC close — acceptable until P2.6 ships update
+	// compaction.
+	replayCtx, replayCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	updates, err := h.Hub.store.LoadUpdates(replayCtx, docID)
+	replayCancel()
+	if err != nil {
+		log.Error().Err(err).Msg("replay load")
+		session.unregister(c)
+		releaseIP()
+		_ = ws.Close()
+		return
 	}
+	replayYjsInto(c, updates, canWrite)
 
 	pumpCtx, pumpCancel := context.WithCancel(context.Background())
 	go c.writePump(pumpCtx)
@@ -218,30 +217,31 @@ func MountOn(r chi.Router, prefix string, h *Handler) {
 	r.Get(strings.TrimRight(prefix, "/")+"/{id}", h.ServeHTTP)
 }
 
-// replayInto streams persisted updates to a freshly-connected conn, then
-// signals SYNC_COMPLETE, then (if applicable) READONLY. Returns the total
-// bytes pushed onto c.send so callers can record a replay-bytes histogram.
+// ensureYjsSubprotocol verifies the upgrade negotiated syncscribe.yjs.v1.
+// Clients that offered no matching subprotocol are refused with close code
+// 4002 so they fail loudly instead of waiting on frames that never come.
+func ensureYjsSubprotocol(ws *websocket.Conn) bool {
+	if ws.Subprotocol() == SubprotocolYjs {
+		return true
+	}
+	wsErrors.WithLabelValues("subprotocol").Inc()
+	_ = ws.SetWriteDeadline(time.Now().Add(writeDeadline))
+	_ = ws.WriteMessage(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(closeUnsupportedProtocol, "unsupported subprotocol"),
+	)
+	_ = ws.Close()
+	return false
+}
+
+// replayYjsInto streams persisted updates to a freshly-connected conn, then
+// signals SyncStep1, then (if applicable) Readonly. Returns the total bytes
+// pushed onto c.send.
 //
 // Contract — the order matters and is part of the P1.2 durable-save
 // guarantee: every byte the server has already persisted reaches the client
-// before SYNC_COMPLETE flips it to `live`. A client that observes `live`
-// can treat its local Y.Doc as caught up.
-func replayInto(c *conn, updates [][]byte, canWrite bool) int {
-	var total int
-	for _, u := range updates {
-		frame := append([]byte{TagUpdate}, u...)
-		c.enqueue(frame)
-		total += len(frame)
-	}
-	c.enqueue([]byte{TagSyncComplete})
-	total++
-	if !canWrite {
-		c.enqueue([]byte{TagReadonly})
-		total++
-	}
-	return total
-}
-
+// before the server's SyncStep1 flips it to `live`. A client that observes
+// `live` can treat its local Y.Doc as caught up.
 func replayYjsInto(c *conn, updates [][]byte, canWrite bool) int {
 	var total int
 	for _, u := range updates {

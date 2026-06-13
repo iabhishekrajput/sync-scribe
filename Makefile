@@ -1,4 +1,4 @@
-.PHONY: help up down dev web api migrate migrate-status migrate-down migrate-reset seed test lint typecheck install
+.PHONY: help up down dev web api migrate migrate-status migrate-down migrate-reset seed test test-db lint typecheck install
 
 ifneq (,$(wildcard .env))
 include .env
@@ -19,6 +19,7 @@ help:
 	@echo "  migrate-reset Drop all migrations (destructive)"
 	@echo "  seed         Seed dev database"
 	@echo "  test         Run all tests"
+	@echo "  test-db      Create syncscribe_test DB and run store tests against it"
 	@echo "  lint         Lint all packages"
 	@echo "  typecheck    Type-check TS packages"
 
@@ -65,6 +66,14 @@ seed:
 test:
 	pnpm -r test
 	cd apps/api && go test ./...
+
+# Store tests hit a real Postgres (syncscribe_test on the compose instance)
+# and skip silently when it's unreachable; this target guarantees they run.
+test-db:
+	docker compose exec -T postgres psql -U syncscribe -tc \
+		"SELECT 1 FROM pg_database WHERE datname = 'syncscribe_test'" | grep -q 1 || \
+		docker compose exec -T postgres psql -U syncscribe -c "CREATE DATABASE syncscribe_test"
+	cd apps/api && go test ./internal/store -count=1
 
 lint:
 	pnpm -r lint

@@ -4,7 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -112,29 +111,6 @@ func (s *Server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) listActivity(w http.ResponseWriter, r *http.Request) {
-	p := auth.FromContext(r.Context())
-	id, ok := parseDocID(w, r)
-	if !ok {
-		return
-	}
-	limit := 50
-	if raw := r.URL.Query().Get("limit"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 {
-			httpx.WriteError(w, r, httpx.BadRequest("Limit must be a positive integer.", err))
-			return
-		}
-		limit = min(n, 100)
-	}
-	events, err := s.store.ListActivity(r.Context(), id, p.Subject, limit)
-	if err != nil {
-		writeStoreErr(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, events)
 }
 
 func decodeCommentAnchor(raw string) ([]byte, error) {

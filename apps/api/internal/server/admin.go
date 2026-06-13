@@ -2,13 +2,27 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/abhishek/sync-scribe/api/internal/httpx"
 )
+
+// adminAuthorized enforces the static ADMIN_SECRET bearer token. Empty
+// secret = no auth (dev only); production should also firewall /admin/*.
+func (s *Server) adminAuthorized(w http.ResponseWriter, r *http.Request) bool {
+	secret := s.cfg.AdminSecret
+	if secret == "" {
+		return true
+	}
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if token != secret {
+		httpx.WriteError(w, r, httpx.Forbidden("Admin bearer token missing or incorrect.", nil))
+		return false
+	}
+	return true
+}
 
 // AdminDocStat holds per-document growth stats for the admin endpoint.
 type AdminDocStat struct {
@@ -31,18 +45,10 @@ type AdminStats struct {
 	Documents         []AdminDocStat `json:"documents"`
 }
 
-// adminStats returns document growth metrics. Protected by a static
-// ADMIN_SECRET bearer token (set via config). In production this endpoint
-// should additionally be firewalled to the internal network.
+// adminStats returns document growth metrics.
 func (s *Server) adminStats(w http.ResponseWriter, r *http.Request) {
-	secret := s.cfg.AdminSecret
-	if secret != "" {
-		auth := r.Header.Get("Authorization")
-		token := strings.TrimPrefix(auth, "Bearer ")
-		if token != secret {
-			httpx.WriteError(w, r, httpx.Forbidden("Admin bearer token missing or incorrect.", nil))
-			return
-		}
+	if !s.adminAuthorized(w, r) {
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -103,21 +109,14 @@ LIMIT 500
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(stats)
+	writeJSON(w, http.StatusOK, stats)
 }
 
 // adminRetentionRuns returns the last N retention run records so operators
 // can confirm the GC job is executing on schedule.
 func (s *Server) adminRetentionRuns(w http.ResponseWriter, r *http.Request) {
-	secret := s.cfg.AdminSecret
-	if secret != "" {
-		auth := r.Header.Get("Authorization")
-		token := strings.TrimPrefix(auth, "Bearer ")
-		if token != secret {
-			httpx.WriteError(w, r, httpx.Forbidden("Admin bearer token missing or incorrect.", nil))
-			return
-		}
+	if !s.adminAuthorized(w, r) {
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -158,6 +157,5 @@ LIMIT 50
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(out)
+	writeJSON(w, http.StatusOK, out)
 }

@@ -45,10 +45,7 @@ func NewProvider(ctx context.Context, c ProviderConfig) (*Provider, error) {
 
 	scopes := c.Scopes
 	if len(scopes) == 0 {
-		// auth.anekdote.in advertises only openid/profile/email — no
-		// offline_access, no refresh_token grant. We use access-token-only
-		// sessions (see handler.go) so refresh tokens aren't needed.
-		scopes = []string{oidc.ScopeOpenID, "profile", "email"}
+		scopes = []string{oidc.ScopeOpenID, "profile", "email", "offline_access"}
 	}
 
 	oauth2Cfg := &oauth2.Config{

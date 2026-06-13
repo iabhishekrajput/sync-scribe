@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { applyTheme, getStoredTheme, setTheme, type Theme } from "../lib/theme";
+import { useEffect, useSyncExternalStore } from "react";
+import { applyTheme, getStoredTheme, setTheme, subscribeTheme, type Theme } from "../lib/theme";
 import { MonitorIcon, MoonIcon, SunIcon } from "./icons";
 
 const NEXT: Record<Theme, Theme> = { system: "light", light: "dark", dark: "system" };
@@ -12,7 +12,7 @@ const TITLE: Record<Theme, string> = {
 };
 
 export function ThemeToggle() {
-  const [theme, setLocal] = useState<Theme>(() => getStoredTheme());
+  const theme = useSyncExternalStore(subscribeTheme, getStoredTheme, () => "system" as Theme);
 
   useEffect(() => {
     applyTheme(theme);
@@ -28,11 +28,7 @@ export function ThemeToggle() {
 
   return (
     <button
-      onClick={() => {
-        const next = NEXT[theme];
-        setTheme(next);
-        setLocal(next);
-      }}
+      onClick={() => setTheme(NEXT[theme])}
       className="flex h-8 w-8 items-center justify-center rounded-full text-current/70 hover:bg-current/10 hover:text-current"
       title={TITLE[theme]}
       aria-label={TITLE[theme]}

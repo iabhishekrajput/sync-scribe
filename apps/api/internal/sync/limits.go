@@ -11,11 +11,12 @@ import (
 // these and decides whether to reconnect with a fresh Y.Doc (RESYNC) or stop
 // (PERMISSION_DENIED).
 const (
-	closeAuthExpired          = 4001
-	closePermissionDenied     = 4003
-	closeRateLimited          = 4008
-	closeResync               = 4010
-	closeDocDeleted           = 4404
+	closeAuthExpired         = 4001
+	closeUnsupportedProtocol = 4002
+	closePermissionDenied    = 4003
+	closeRateLimited         = 4008
+	closeResync              = 4010
+	closeDocDeleted          = 4404
 )
 
 // Defaults sized for a single user typing fast (~20 char/s producing batched

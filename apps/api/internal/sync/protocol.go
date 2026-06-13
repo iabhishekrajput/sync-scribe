@@ -1,36 +1,29 @@
 package sync
 
-const (
-	SubprotocolLegacy = "syncscribe.v1"
-	SubprotocolYjs    = "syncscribe.yjs.v1"
-)
-
-// Legacy tagged wire format:
-//   Frame = [tag: u8] [payload: bytes]
+// Wire contract — stock y-protocols varint framing, negotiated via the
+// Sec-WebSocket-Protocol value "syncscribe.yjs.v1".
 //
-//   0x00 UPDATE        payload = raw Yjs update bytes
-//   0x01 SYNC_COMPLETE payload empty; sent by server after replaying all
-//                      stored updates on a fresh connection
-//   0x02 AWARENESS     payload = encoded awareness state
-//   0x03 PING          payload empty; heartbeat
-//   0x04 READONLY      payload empty; server rejected writes for this conn
-//   0x05 ACK           payload empty; one ACK per persisted update from this
-//                      conn. Clients count outstanding sends vs ACKs to drive
-//                      a Google-Docs-style 'Saving / Saved' status indicator.
+//	Frame = [msgType: varint] [body...]
+//
+// MsgSync and MsgAwareness match y-protocols/sync and y-protocols/awareness.
+// MsgReadonly and MsgAck are SyncScribe extensions: Readonly tells the client
+// its writes are rejected for this conn; the server emits one Ack per
+// persisted update from this conn, which clients count against outstanding
+// sends to drive a 'Saving / Saved' indicator.
+//
+// Replay contract: on connect the server streams every persisted update as
+// SyncUpdate frames, then SyncStep1 (empty state vector), then MsgReadonly if
+// the conn cannot write. A client that observes the server's SyncStep1 can
+// treat its local Y.Doc as caught up.
+//
+// Client SyncStep1 is validated and ignored (history was already replayed at
+// connect). Client SyncStep2 is validated and DISCARDED: persisting it would
+// append a full-state blob per reconnect with no compaction (P2.6) to absorb
+// them. First-party clients resend unacked updates from their outbox instead;
+// stock y-protocols clients with offline state will lose it — revisit when
+// compaction ships.
+const SubprotocolYjs = "syncscribe.yjs.v1"
 
-const (
-	TagUpdate       byte = 0x00
-	TagSyncComplete byte = 0x01
-	TagAwareness    byte = 0x02
-	TagPing         byte = 0x03
-	TagReadonly     byte = 0x04
-	TagAck          byte = 0x05
-)
-
-// Yjs-mode top-level varint message types. Sync and awareness match
-// y-protocols. Readonly + ACK remain SyncScribe extensions for the migration
-// window so the web client can preserve its current UX while we phase out the
-// legacy tagged transport.
 const (
 	MsgSync           uint64 = 0
 	MsgAwareness      uint64 = 1
@@ -41,8 +34,8 @@ const (
 )
 
 const (
-	SyncStep1 uint64 = 0
-	SyncStep2 uint64 = 1
+	SyncStep1  uint64 = 0
+	SyncStep2  uint64 = 1
 	SyncUpdate uint64 = 2
 )
 

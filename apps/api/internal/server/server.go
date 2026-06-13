@@ -16,12 +16,12 @@ import (
 )
 
 type Server struct {
-	cfg       *config.Config
-	auth      *auth.Handler
-	prov      *auth.Provider
-	store     *store.Store
-	sync      *syncpkg.Handler
-	broker    syncpkg.Broker
+	cfg    *config.Config
+	auth   *auth.Handler
+	prov   *auth.Provider
+	store  *store.Store
+	sync   *syncpkg.Handler
+	broker syncpkg.Broker
 }
 
 func New(cfg *config.Config, prov *auth.Provider, st *store.Store, broker syncpkg.Broker) *Server {
@@ -32,11 +32,11 @@ func New(cfg *config.Config, prov *auth.Provider, st *store.Store, broker syncpk
 		hub = syncpkg.NewHub(st)
 	}
 	return &Server{
-		cfg:       cfg,
-		prov:      prov,
-		store:     st,
-		sync:      syncpkg.New(hub, prov, st, cfg.FrontendBaseURL),
-		broker:    broker,
+		cfg:    cfg,
+		prov:   prov,
+		store:  st,
+		sync:   syncpkg.New(hub, prov, st, cfg.FrontendBaseURL),
+		broker: broker,
 		auth: &auth.Handler{
 			P:               prov,
 			CookieSecret:    cfg.CookieSecret,
@@ -105,6 +105,10 @@ func (s *Server) Routes() http.Handler {
 				r.Get("/access", s.listAccess)
 				r.Post("/access", s.upsertAccess)
 				r.Delete("/access/{userID}", s.deleteAccess)
+				r.Get("/access-requests", s.listAccessRequests)
+				r.Post("/access-requests", s.createAccessRequest)
+				r.Post("/access-requests/{requestID}/approve", s.approveAccessRequest)
+				r.Post("/access-requests/{requestID}/deny", s.denyAccessRequest)
 				r.Get("/snapshots", s.listSnapshots)
 				r.Post("/snapshots", s.publishSnapshot)
 				r.Get("/snapshots/{version}", s.getSnapshot)
@@ -126,6 +130,7 @@ func (s *Server) Routes() http.Handler {
 				r.Post("/comments/{commentID}/resolve", s.resolveComment)
 				r.Delete("/comments/{commentID}", s.deleteComment)
 				r.Get("/activity", s.listActivity)
+				r.Get("/events", s.streamEvents)
 			})
 		})
 		r.Post("/invites/{token}/claim", s.claimInvite)
