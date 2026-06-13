@@ -33,16 +33,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Build toolchain is only needed by the manual (Go) build. The
+      # build-mode: none languages (actions, javascript-typescript) extract
+      # source directly, so skip setup for them — running setup-node with
+      # `cache: pnpm` there left an empty store and failed the post-job
+      # cache-save step.
       - name: Setup pnpm
+        if: matrix.build-mode == 'manual'
         uses: pnpm/action-setup@v4
 
       - name: Setup Node
+        if: matrix.build-mode == 'manual'
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: pnpm
 
       - name: Set up Go
+        if: matrix.build-mode == 'manual'
         uses: actions/setup-go@v5
         with:
           go-version-file: apps/api/go.mod
